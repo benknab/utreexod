@@ -772,10 +772,9 @@ func (idx *UtreexoProofIndex) PruneBlock(_ database.Tx, _ *chainhash.Hash, lastK
 		}
 	}
 
-	// It's ok to fetch the best snapshot here as the block called on pruneblock has not
-	// been yet connected yet on the utreexo state. So this is indeed the correct hash.
-	bestHash := idx.chain.BestSnapshot().Hash
-	return idx.Flush(&bestHash, blockchain.FlushRequired, true)
+	// The caller must roll back the pruning transaction before flushing.
+	// Flush calls db.Flush, which waits for all active transactions to end.
+	return blockchain.ErrPruneRequiresFlush
 }
 
 func (idx *UtreexoProofIndex) fetchBlockSummary(blockHash, prevHash *chainhash.Hash) (*wire.UtreexoBlockSummary, error) {

@@ -8,6 +8,7 @@ package blockchain
 import (
 	"bytes"
 	"container/list"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -687,15 +688,14 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 	}
 
 	// Atomically insert info into the database.
-	err = b.db.Update(func(dbTx database.Tx) error {
+	connect := func(dbTx database.Tx) error {
 		if b.pruneTarget != 0 {
 			// NODE_NETWORK_LIMITED service bit requires that the last 288 blocks.
 			// Since we just saved block with `node.height`, the minimum block height
 			// we need to keep is `node.height-287`.
 			earliestKeptBlockHeight, err := dbTx.PruneBlocks(b.pruneTarget, node.height-287)
 			if err != nil {
-				log.Warnf("Prune failed on block height %d, hash %s. Error %v",
-					node.height, node.hash.String(), err)
+				return err
 			}
 
 			// Only attempt to prune blocks from the index if there have been blocks pruned.
@@ -703,8 +703,7 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 				err = b.indexManager.PruneBlocks(
 					dbTx, earliestKeptBlockHeight, b.BlockHashByHeight)
 				if err != nil {
-					log.Warnf("Prune failed on block height %d, hash %s. Error %v",
-						node.height, node.hash.String(), err)
+					return err
 				}
 			}
 			if b.utreexoView == nil {
@@ -771,7 +770,21 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 		}
 
 		return nil
-	})
+	}
+	err = b.db.Update(connect)
+	if errors.Is(err, ErrPruneRequiresFlush) {
+		// PruneBlocks only schedules file deletion until the transaction
+		// commits. Roll it back before flushing: db.Flush cannot run while
+		// this transaction holds the database lock, and flushing after
+		// deleting files could leave the accumulator without recovery data.
+		// Indexes still represent the previous tip because ConnectBlock has
+		// not run yet. Keep the chain lock held through the flush and retry.
+		bestHash := b.BestSnapshot().Hash
+		if err := b.indexManager.Flush(&bestHash, FlushRequired, true); err != nil {
+			return err
+		}
+		err = b.db.Update(connect)
+	}
 	if err != nil {
 		return err
 	}

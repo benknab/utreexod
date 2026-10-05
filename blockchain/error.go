@@ -5,8 +5,13 @@
 package blockchain
 
 import (
+	"errors"
 	"fmt"
 )
+
+// ErrPruneRequiresFlush asks the caller to roll back pruning, flush the indexes
+// outside the database transaction, and retry before removing recovery data.
+var ErrPruneRequiresFlush = errors.New("index flush required before pruning")
 
 // DeploymentError identifies an error that indicates a deployment ID was
 // specified that does not exist.
