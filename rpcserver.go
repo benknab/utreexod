@@ -4915,6 +4915,7 @@ type rpcServer struct {
 	helpCacher             *helpCacher
 	requestProcessShutdown chan struct{}
 	quit                   chan int
+	publicHTTPServer       *http.Server
 }
 
 // httpStatusLine returns a response Status-Line (RFC 2616 Section 6.1)
@@ -4979,6 +4980,7 @@ func (s *rpcServer) Stop() error {
 		return nil
 	}
 	rpcsLog.Warnf("RPC server shutting down")
+	s.stopPublicRPC()
 	for _, listener := range s.cfg.Listeners {
 		err := listener.Close()
 		if err != nil {
@@ -5506,6 +5508,7 @@ func (s *rpcServer) Start() {
 	}
 
 	rpcsLog.Trace("Starting RPC server")
+	s.startPublicRPC()
 	rpcServeMux := http.NewServeMux()
 	httpServer := &http.Server{
 		Handler: rpcServeMux,
@@ -5744,6 +5747,10 @@ type rpcserverConfig struct {
 	// is stopped.
 	Listeners []net.Listener
 
+	// PublicListeners accepts only the anonymous public method allowlist.
+	// These listeners are also owned and closed by the RPC server.
+	PublicListeners []net.Listener
+
 	// StartupTime is the unix timestamp for when the server that is hosting
 	// the RPC server started.
 	StartupTime int64
@@ -5825,6 +5832,9 @@ func newRPCServer(config *rpcserverConfig) (*rpcServer, error) {
 		rpc.limitauthsha = sha256.Sum256([]byte(auth))
 	}
 	rpc.ntfnMgr = newWsNotificationManager(&rpc)
+	if len(config.PublicListeners) > 0 {
+		rpc.publicHTTPServer = newPublicRPCServer(rpc.standardCmdResult)
+	}
 	rpc.cfg.Chain.Subscribe(rpc.handleBlockchainNotification)
 
 	return &rpc, nil

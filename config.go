@@ -132,6 +132,7 @@ type config struct {
 	RPCLimitPass         string   `long:"rpclimitpass" default-mask:"-" description:"Password for limited RPC connections"`
 	RPCLimitUser         string   `long:"rpclimituser" description:"Username for limited RPC connections"`
 	RPCListeners         []string `long:"rpclisten" description:"Add an interface/port to listen for RPC connections (default port: 8334, testnet: 18334)"`
+	RPCPublicListeners   []string `long:"rpcpubliclisten" description:"Listen for anonymous read-only HTTP RPC on this address:port (repeatable, disabled by default)"`
 	RPCMaxClients        int      `long:"rpcmaxclients" description:"Max number of RPC clients for standard connections"`
 	RPCMaxConcurrentReqs int      `long:"rpcmaxconcurrentreqs" description:"Max number of concurrent RPC requests that may be processed concurrently"`
 	RPCMaxWebsockets     int      `long:"rpcmaxwebsockets" description:"Max number of RPC websocket connections"`
@@ -824,6 +825,9 @@ func loadConfig() (*config, []string, error) {
 	}
 
 	if cfg.DisableRPC {
+		if len(cfg.RPCPublicListeners) > 0 {
+			return nil, nil, fmt.Errorf("%s: --rpcpubliclisten cannot be used with --norpc", funcName)
+		}
 		btcdLog.Infof("RPC service is disabled")
 	}
 
@@ -1032,6 +1036,16 @@ func loadConfig() (*config, []string, error) {
 	cfg.RPCListeners = normalizeAddresses(cfg.RPCListeners,
 		activeNetParams.rpcPort)
 
+	// Public RPC requires an explicit port so it never implicitly shares the
+	// authenticated RPC port.
+	for _, addr := range cfg.RPCPublicListeners {
+		_, port, err := net.SplitHostPort(addr)
+		if err != nil || port == "" {
+			return nil, nil, fmt.Errorf("%s: --rpcpubliclisten requires an address:port: %q", funcName, addr)
+		}
+	}
+	cfg.RPCPublicListeners = removeDuplicateAddresses(cfg.RPCPublicListeners)
+
 	// Only allow TLS to be disabled if the RPC is bound to localhost
 	// addresses.
 	if !cfg.DisableRPC && cfg.DisableTLS {
@@ -1040,7 +1054,9 @@ func loadConfig() (*config, []string, error) {
 			"127.0.0.1": {},
 			"::1":       {},
 		}
-		for _, addr := range cfg.RPCListeners {
+		tlsListeners := append([]string{}, cfg.RPCListeners...)
+		tlsListeners = append(tlsListeners, cfg.RPCPublicListeners...)
+		for _, addr := range tlsListeners {
 			host, _, err := net.SplitHostPort(addr)
 			if err != nil {
 				str := "%s: RPC listen interface '%s' is " +

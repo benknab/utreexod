@@ -53,6 +53,9 @@ make install
 
 ## Getting Started
 
+For anonymous access to selected native JSON-RPC methods, see
+[Public read-only RPC](docs/public-rpc.md).
+
 To run a utreexo node:
 
 ```bash

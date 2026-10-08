@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/decred/dcrd/lru"
 	"github.com/utreexo/utreexo"
 	"github.com/utreexo/utreexod/addrmgr"
 	"github.com/utreexo/utreexod/bdkwallet"
@@ -32,7 +33,6 @@ import (
 	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/connmgr"
-	"github.com/decred/dcrd/lru"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/electrum"
 	"github.com/utreexo/utreexod/mempool"
@@ -3857,9 +3857,30 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		if len(rpcListeners) == 0 {
 			return nil, errors.New("RPCS: No valid listen address")
 		}
+		// Close listeners on setup failure, before ownership passes to the
+		// RPC server.
+		var publicListeners []net.Listener
+		rpcReady := false
+		defer func() {
+			if !rpcReady {
+				for _, listener := range append(rpcListeners, publicListeners...) {
+					listener.Close()
+				}
+			}
+		}()
+		if len(cfg.RPCPublicListeners) > 0 {
+			publicListeners, err = setupListeners(cfg.RPCPublicListeners, !cfg.DisableTLS)
+			if err != nil {
+				return nil, err
+			}
+			if len(publicListeners) == 0 {
+				return nil, errors.New("RPCS: No valid public listen address")
+			}
+		}
 
 		s.rpcServer, err = newRPCServer(&rpcserverConfig{
 			Listeners:             rpcListeners,
+			PublicListeners:       publicListeners,
 			StartupTime:           s.startupTime,
 			ConnMgr:               &rpcConnManager{&s},
 			SyncMgr:               &rpcSyncMgr{&s, s.syncManager},
@@ -3882,6 +3903,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		if err != nil {
 			return nil, err
 		}
+		rpcReady = true
 
 		// Signal process shutdown when the RPC server requests it.
 		go func() {
