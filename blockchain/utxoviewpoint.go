@@ -730,11 +730,12 @@ func (b *BlockChain) FetchUtxoView(tx *btcutil.Tx) (*UtxoViewpoint, error) {
 	}
 
 	// Request the utxos from the point of view of the end of the main
-	// chain.
+	// chain. Cache misses populate shared entries and memory accounting,
+	// so even a read request needs the exclusive chain lock here.
 	view := NewUtxoViewpoint()
-	b.chainLock.RLock()
+	b.chainLock.Lock()
 	err := view.fetchUtxosFromCache(b.utxoCache, needed)
-	b.chainLock.RUnlock()
+	b.chainLock.Unlock()
 	return view, err
 }
 
@@ -746,11 +747,11 @@ func (b *BlockChain) FetchUtxoView(tx *btcutil.Tx) (*UtxoViewpoint, error) {
 // allow pruning of spent transaction outputs.  In practice this means the
 // caller must check if the returned entry is nil before invoking methods on it.
 //
-// This function is safe for concurrent access however the returned entry (if
-// any) is NOT.
+// This function is safe for concurrent access. The returned entry is a shallow
+// copy, so spending it cannot mutate the cache. Its script must not be modified.
 func (b *BlockChain) FetchUtxoEntry(outpoint wire.OutPoint) (*UtxoEntry, error) {
-	b.chainLock.RLock()
-	defer b.chainLock.RUnlock()
+	b.chainLock.Lock()
+	defer b.chainLock.Unlock()
 
 	// For utreexo nodes, they may not have utxocache.
 	if b.utxoCache == nil {
@@ -762,5 +763,5 @@ func (b *BlockChain) FetchUtxoEntry(outpoint wire.OutPoint) (*UtxoEntry, error) 
 		return nil, err
 	}
 
-	return entries[0], nil
+	return entries[0].Clone(), nil
 }

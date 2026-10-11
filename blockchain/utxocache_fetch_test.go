@@ -212,3 +212,30 @@ func BenchmarkUtxoCacheFetch(b *testing.B) {
 		})
 	}
 }
+
+func TestFetchUtxoEntryDetached(t *testing.T) {
+	chain, _, cleanup := utxoCacheTestChain(t.Name())
+	t.Cleanup(cleanup)
+	outpoints := populateFetchEntries(t, chain.db, 16)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, op := range outpoints {
+				entry, err := chain.FetchUtxoEntry(op)
+				if err != nil || entry == nil {
+					t.Errorf("fetch %v: %v", op, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	entry, err := chain.FetchUtxoEntry(outpoints[0])
+	require.NoError(t, err)
+	entry.Spend()
+	again, err := chain.FetchUtxoEntry(outpoints[0])
+	require.NoError(t, err)
+	require.False(t, again.IsSpent(), "callers must not mutate the internal cache")
+}
