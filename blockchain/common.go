@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/utreexo/utreexod/btcutil"
@@ -103,8 +104,13 @@ func SolveBlock(header *wire.BlockHeader) bool {
 	// intended to be run as a goroutine.
 	targetDifficulty := CompactToBig(header.Bits)
 	quit := make(chan bool)
-	results := make(chan sbResult)
+	// Every solver may find an answer before cancellation. Buffer all results
+	// so losing solvers can exit after the caller consumes the first answer.
+	results := make(chan sbResult, runtime.NumCPU())
+	var workers sync.WaitGroup
+	defer workers.Wait()
 	solver := func(hdr wire.BlockHeader, startNonce, stopNonce uint32) {
+		defer workers.Done()
 		// We need to modify the nonce field of the header, so make sure
 		// we work with a copy of the original header.
 		for i := startNonce; i >= startNonce && i <= stopNonce; i++ {
@@ -135,6 +141,7 @@ func SolveBlock(header *wire.BlockHeader) bool {
 		if i == numCores-1 {
 			rangeStop = stopNonce
 		}
+		workers.Add(1)
 		go solver(*header, rangeStart, rangeStop)
 	}
 	for i := uint32(0); i < numCores; i++ {
