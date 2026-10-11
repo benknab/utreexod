@@ -1145,10 +1145,10 @@ func (idx *FlatUtreexoProofIndex) getUndoData(block *btcutil.Block) (
 }
 
 // getCreateIndexes returns the indexes within the newly created leaves that the delhashes were at.
-func (idx *FlatUtreexoProofIndex) getCreateIndexes(lds []wire.LeafData, delHashes []utreexo.Hash) ([]int32, error) {
+func (idx *FlatUtreexoProofIndex) getCreateIndexes(tip *chainhash.Hash, lds []wire.LeafData, delHashes []utreexo.Hash) ([]int32, error) {
 	createIndexes := make([]int32, 0, len(lds))
 	for i, ld := range lds {
-		stxoBlock, err := idx.chain.BlockByHeight(ld.Height)
+		stxoBlock, err := idx.chain.BlockByHeightOnBranch(tip, ld.Height)
 		if err != nil {
 			return nil, err
 		}
@@ -1160,6 +1160,9 @@ func (idx *FlatUtreexoProofIndex) getCreateIndexes(lds []wire.LeafData, delHashe
 				createIndexes = append(createIndexes, int32(j))
 				break
 			}
+		}
+		if len(createIndexes) != i+1 {
+			return nil, fmt.Errorf("deleted leaf %x not found in block %v", delHashes[i], stxoBlock.Hash())
 		}
 	}
 
@@ -1184,7 +1187,7 @@ func (idx *FlatUtreexoProofIndex) DisconnectBlock(dbTx database.Tx, block *btcut
 	}
 
 	if !idx.config.Pruned {
-		createIndexes, err := idx.getCreateIndexes(ud.LeafDatas, delHashes)
+		createIndexes, err := idx.getCreateIndexes(block.Hash(), ud.LeafDatas, delHashes)
 		if err != nil {
 			return err
 		}

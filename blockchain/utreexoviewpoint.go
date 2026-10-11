@@ -377,19 +377,22 @@ func ProofSanity(ud *wire.UData, outPoints []wire.OutPoint) error {
 
 // ReconstructUData is a wrapper around reconstructUData and provides a convenient
 // function for udata reconstruction.
-// NOTE: ReconstructUData will only work on udata for blocks that are part of the
-// best chain. It will return an error when trying to reconstruct a udata for a
-// block in a side chain.
+// Ancestry is pinned to blockHash so a concurrent reorganization cannot change
+// the reconstructed leaf hashes. Archived disconnected blocks are supported.
 //
 // This function is safe for concurrent access.
 func (b *BlockChain) ReconstructUData(ud *wire.UData, blockHash chainhash.Hash) ([]utreexo.Hash, error) {
-	block, err := b.BlockByHash(&blockHash)
+	branch, err := b.branchNodes(&blockHash)
+	if err != nil {
+		return nil, err
+	}
+	block, err := b.BlockByHeightOnBranch(&blockHash, branch.tip.height)
 	if err != nil {
 		return nil, err
 	}
 
 	_, _, inskip, _ := DedupeBlock(block)
-	delHashes, err := reconstructUData(ud, block, b.bestChain, inskip)
+	delHashes, err := reconstructUDataFromSource(ud, block, branch, inskip)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +410,11 @@ func reconstructUData(ud *wire.UData, block *btcutil.Block, chainView *chainView
 	if chainView == nil {
 		return nil, fmt.Errorf("Passed in chainView is nil. Cannot make compact udata to full")
 	}
+	return reconstructUDataFromSource(ud, block, chainView, inskip)
+}
 
+func reconstructUDataFromSource(ud *wire.UData, block *btcutil.Block, chainView blockNodeSource,
+	inskip []uint32) ([]utreexo.Hash, error) {
 	// blockInIdx is used to get the indexes of the skips.  ldIdx is used
 	// as a separate idx for the LeafDatas.  We need both of them because
 	// LeafDatas have already been deduped while the transactions are not.
@@ -473,7 +480,7 @@ func (b *BlockChain) ReconstructLeafDatas(lds []wire.LeafData, txIns []*wire.TxI
 }
 
 // reconstructLeafData reconstructs a single leafdata given the associated txIn and the chainview.
-func reconstructLeafData(ld *wire.LeafData, txIn *wire.TxIn, chainView *chainView) (*wire.LeafData, error) {
+func reconstructLeafData(ld *wire.LeafData, txIn *wire.TxIn, chainView blockNodeSource) (*wire.LeafData, error) {
 	// Get BlockHash.
 	blockNode := chainView.NodeByHeight(ld.Height)
 	if blockNode == nil {
@@ -601,6 +608,15 @@ func BlockToDelLeaves(stxos []SpentTxOut, chain *BlockChain, block *btcutil.Bloc
 	if chain == nil {
 		return nil, fmt.Errorf("Passed in chain is nil. Cannot make delLeaves")
 	}
+	if len(stxos) == 0 {
+		return nil, nil
+	}
+	// The block itself may not yet be in the index during connection. Its
+	// parent is known and pins every external prevout to the correct fork.
+	branch, err := chain.branchNodes(&block.MsgBlock().Header.PrevBlock)
+	if err != nil {
+		return nil, err
+	}
 
 	var blockInIdx uint32
 	for idx, tx := range block.Transactions() {
@@ -625,11 +641,8 @@ func BlockToDelLeaves(stxos []SpentTxOut, chain *BlockChain, block *btcutil.Bloc
 
 			stxo := stxos[blockInIdx-1]
 
-			blockHash, err := chain.BlockHashByHeight(stxo.Height)
-			if err != nil {
-				return nil, err
-			}
-			if blockHash == nil {
+			node := branch.NodeByHeight(stxo.Height)
+			if node == nil {
 				return nil, fmt.Errorf("Couldn't find blockhash for height %d",
 					stxo.Height)
 			}
@@ -657,7 +670,7 @@ func BlockToDelLeaves(stxos []SpentTxOut, chain *BlockChain, block *btcutil.Bloc
 			}
 
 			var leaf = wire.LeafData{
-				BlockHash:             *blockHash,
+				BlockHash:             node.hash,
 				OutPoint:              op,
 				Amount:                stxo.Amount,
 				ReconstructablePkType: pkType,
