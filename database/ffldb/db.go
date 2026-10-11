@@ -1034,6 +1034,15 @@ type transaction struct {
 // Enforce transaction implements the database.Tx interface.
 var _ database.Tx = (*transaction)(nil)
 
+var _ database.ConcurrentReadTx = (*transaction)(nil)
+
+// SupportsConcurrentReads permits point reads of immutable cache roots and
+// the shared LevelDB snapshot. Writable transactions also consult mutable
+// pending treaps and must continue to be accessed serially.
+func (tx *transaction) SupportsConcurrentReads() bool {
+	return !tx.writable
+}
+
 // removeActiveIter removes the passed iterator from the list of active
 // iterators against the pending keys treap.
 func (tx *transaction) removeActiveIter(iter *treap.Iterator) {

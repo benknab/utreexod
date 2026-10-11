@@ -7,6 +7,7 @@ package blockchain
 import (
 	"container/list"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -207,14 +208,47 @@ func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error
 	dbEntries := make([]*UtxoEntry, len(missingOps))
 	err := s.db.View(func(dbTx database.Tx) error {
 		utxoBucket := dbTx.Metadata().Bucket(utxoSetBucketName)
+		fetchRange := func(start, end int) error {
+			for i := start; i < end; i++ {
+				entry, err := dbFetchUtxoEntry(dbTx, utxoBucket, missingOps[i])
+				if err != nil {
+					return err
+				}
+				dbEntries[i] = entry
+			}
+			return nil
+		}
 
-		for i := range missingOps {
-			entry, err := dbFetchUtxoEntry(dbTx, utxoBucket, missingOps[i])
+		// As in Core #35295/#35738, overlap prevout I/O while retaining one
+		// consistent snapshot. Leave small requests serial and bound workers
+		// independently of block size. Cache mutation and validation remain
+		// ordered, after every reader has finished.
+		// Two readers also avoid contention on GoLevelDB's shared caches
+		// when the database is already warm.
+		const maxReaders = 2
+		workers := min(maxReaders, runtime.GOMAXPROCS(0), len(missingOps)/128)
+		concurrent, ok := dbTx.(database.ConcurrentReadTx)
+		if workers < 2 || !ok || !concurrent.SupportsConcurrentReads() {
+			return fetchRange(0, len(missingOps))
+		}
+
+		var wg sync.WaitGroup
+		var errs [maxReaders]error
+		for worker := 1; worker < workers; worker++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[worker] = fetchRange(len(missingOps)*worker/workers,
+					len(missingOps)*(worker+1)/workers)
+			}()
+		}
+		errs[0] = fetchRange(0, len(missingOps)/workers)
+		wg.Wait()
+		// Contiguous ranges preserve the serial path's first-error order.
+		for _, err := range errs[:workers] {
 			if err != nil {
 				return err
 			}
-
-			dbEntries[i] = entry
 		}
 
 		return nil

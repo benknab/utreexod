@@ -475,6 +475,18 @@ type Tx interface {
 	Rollback() error
 }
 
+// ConcurrentReadTx is an optional capability for concurrent point reads from
+// one transaction snapshot. When SupportsConcurrentReads returns true, callers
+// may use Bucket.Get concurrently on buckets obtained from this transaction.
+// All readers must finish before the transaction ends. This does not authorize
+// concurrent writes or sharing a cursor between goroutines.
+//
+// Transactions without this capability must be read serially.
+type ConcurrentReadTx interface {
+	Tx
+	SupportsConcurrentReads() bool
+}
+
 // DB provides a generic interface that is used to store bitcoin blocks and
 // related metadata.  This interface is intended to be agnostic to the actual
 // mechanism used for backend data storage.  The RegisterDriver function can be
