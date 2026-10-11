@@ -509,45 +509,35 @@ func (idx *FlatUtreexoProofIndex) ConnectBlock(dbTx database.Tx, block *btcutil.
 	}
 	adds := blockchain.BlockToAddLeaves(block, outskip, outCount)
 
-	idx.mtx.RLock()
-	ud, err := wire.GenerateUData(dels, idx.utreexoState.state)
-	idx.mtx.RUnlock()
+	delHashes, err := wire.HashesFromLeafDatas(dels)
 	if err != nil {
 		return err
 	}
 
 	hasher := wire.NewLeafHasher()
-	delHashes := make([]utreexo.Hash, len(ud.LeafDatas))
-	for i := range ud.LeafDatas {
-		delHashes[i] = hasher.HashLeaf(&ud.LeafDatas[i])
-	}
-	// For pruned nodes, we need to save the undo block in order to undo
-	// a block on reorgs. If we have all the proofs block by block, that
-	// data can be used for reorgs but a pruned node will not have the
-	// proofs available.
-	if idx.config.Pruned {
-		err = idx.storeUndoBlock(block.Height(), &ud.AccProof, delHashes)
-		if err != nil {
-			return err
-		}
-	} else {
-		err = idx.undoState.StoreData(block.Height(), emptyUndoBlock)
-		if err != nil {
-			return fmt.Errorf("store undoblock err. %v", err)
-		}
-	}
-
 	addHashes := make([]utreexo.Leaf, len(adds))
 	for i := range adds {
 		addHashes[i] = utreexo.Leaf{Hash: hasher.HashLeaf(&adds[i]), Remember: false}
 	}
 
 	idx.mtx.Lock()
-	createdIndexes, err := idx.utreexoState.state.ModifyAndReturnTTLs(addHashes, delHashes, ud.AccProof)
+	proof, createdIndexes, err := idx.utreexoState.state.ProveAndModify(addHashes, delHashes, func(proof utreexo.Proof) error {
+		// Store undo data before the first forest mutation, retaining the
+		// existing failure/recovery order. The combined operation reuses both
+		// leaf hashes and physical positions under one forest lock.
+		if idx.config.Pruned {
+			return idx.storeUndoBlock(block.Height(), &proof, delHashes)
+		}
+		if err := idx.undoState.StoreData(block.Height(), emptyUndoBlock); err != nil {
+			return fmt.Errorf("store undoblock err. %v", err)
+		}
+		return nil
+	})
 	idx.mtx.Unlock()
 	if err != nil {
 		return err
 	}
+	ud := &wire.UData{AccProof: proof, LeafDatas: dels}
 
 	err = idx.storeRoots(block.Height(), idx.utreexoState.state)
 	if err != nil {
