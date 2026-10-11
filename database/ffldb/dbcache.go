@@ -551,6 +551,11 @@ func (c *dbCache) needsFlush(tx *transaction) bool {
 	// referenced by the snapshot used by the transaction.
 	snap := tx.snapshot
 	totalSize := snap.pendingKeys.Size() + snap.pendingRemove.Size()
+	// Include this transaction before copying it into the immutable cache.
+	// In particular, a UTXO flush can dwarf the cache limit even when the
+	// previous snapshot is nearly empty. Writing it directly avoids another
+	// full treap and whole-transaction KV slices during commitTx.
+	totalSize += tx.pendingKeys.Size() + tx.pendingRemove.Size()
 	totalSize = uint64(float64(totalSize) * 1.5)
 	return totalSize > c.maxSize
 }
