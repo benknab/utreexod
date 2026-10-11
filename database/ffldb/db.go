@@ -2681,12 +2681,6 @@ func openDB(dbPath string, network wire.BitcoinNet, create bool) (database.DB, e
 		Strict:       opt.DefaultStrict,
 		Compression:  opt.NoCompression,
 		Filter:       filter.NewBloomFilter(10),
-		// Core #30039 reduces compaction sync frequency with 32 MiB tables.
-		// GoLevelDB's atomic transactions spill at WriteBuffer, so increase
-		// that bounded buffer too (Core #31645). Separate Write batches
-		// would lose the whole-transaction atomicity required by FFldb.
-		CompactionTableSize: 32 * 1024 * 1024,
-		WriteBuffer:         32 * 1024 * 1024,
 	}
 	ldb, err := leveldb.OpenFile(metadataDbPath, &opts)
 	if err != nil {
