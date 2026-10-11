@@ -2,11 +2,14 @@ package ffldb
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/syndtr/goleveldb/leveldb"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/database/internal/treap"
 )
@@ -61,4 +64,65 @@ func TestCacheBudgetIncludesPendingDeletes(t *testing.T) {
 		tx.pendingRemove.Put(bytes.Repeat([]byte{i}, 64), nil)
 	}
 	require.True(t, c.needsFlush(tx), "pending deletes also consume transaction memory")
+}
+
+// A flush larger than the LevelDB write buffer spills to table files before
+// commit. All of those files must remain invisible on abort and appear together
+// on commit, while readers keep their original snapshot.
+func TestMetadataSpillTransactionAtomicity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "db")
+	idb, err := openDB(path, blockDataNet, true)
+	require.NoError(t, err)
+	t.Cleanup(func() { idb.Close() })
+	d := idb.(*db)
+	key := []byte("atomicity-existing")
+	require.NoError(t, d.cache.ldb.Put(key, []byte("old"), nil))
+	snapshot, err := d.cache.ldb.GetSnapshot()
+	require.NoError(t, err)
+	defer snapshot.Release()
+	abort := errors.New("abort after spilling")
+	value := bytes.Repeat([]byte{42}, 32*1024)
+	write := func(tx *leveldb.Transaction, fail bool) error {
+		if err := tx.Put(key, []byte("new"), nil); err != nil {
+			return err
+		}
+		for i := 0; i < 1100; i++ {
+			if err := tx.Put([]byte(fmt.Sprintf("atomicity-%04d", i)), value, nil); err != nil {
+				return err
+			}
+		}
+		if fail {
+			return abort
+		}
+		return nil
+	}
+	require.ErrorIs(t, d.cache.updateDB(func(tx *leveldb.Transaction) error {
+		return write(tx, true)
+	}), abort)
+	got, err := d.cache.ldb.Get(key, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("old"), got)
+	for _, index := range []int{0, 1099} {
+		_, err := d.cache.ldb.Get([]byte(fmt.Sprintf("atomicity-%04d", index)), nil)
+		require.ErrorIs(t, err, leveldb.ErrNotFound)
+	}
+	require.NoError(t, d.cache.updateDB(func(tx *leveldb.Transaction) error {
+		return write(tx, false)
+	}))
+	got, err = snapshot.Get(key, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("old"), got)
+	snapshot.Release()
+	require.NoError(t, idb.Close())
+	idb, err = openDB(path, blockDataNet, false)
+	require.NoError(t, err)
+	d = idb.(*db)
+	got, err = d.cache.ldb.Get(key, nil)
+	require.NoError(t, err)
+	require.Equal(t, []byte("new"), got)
+	for _, index := range []int{0, 1099} {
+		got, err := d.cache.ldb.Get([]byte(fmt.Sprintf("atomicity-%04d", index)), nil)
+		require.NoError(t, err)
+		require.Equal(t, value, got)
+	}
 }
