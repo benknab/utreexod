@@ -550,7 +550,24 @@ func BlockToAddLeaves(block *btcutil.Block, skiplist []uint32, outCount int) []w
 	// We're overallocating a little bit since all the unspendables
 	// won't be appended. It's ok though for the pre-allocation savings.
 	leaves := make([]wire.LeafData, 0, outCount-len(skiplist))
+	blockToAdds(block, skiplist, func(leaf *wire.LeafData) { leaves = append(leaves, *leaf) })
+	return leaves
+}
 
+// BlockToAddHashes hashes additions without retaining their intermediate
+// preimages. Proof indexing needs only these commitments and the add count.
+func BlockToAddHashes(block *btcutil.Block, skiplist []uint32, outCount int) []utreexo.Leaf {
+	leaves := make([]utreexo.Leaf, 0, outCount-len(skiplist))
+	hasher := wire.NewLeafHasher()
+	blockToAdds(block, skiplist, func(leaf *wire.LeafData) {
+		leaves = append(leaves, utreexo.Leaf{Hash: hasher.HashLeaf(leaf)})
+	})
+	return leaves
+}
+
+// The visitor must consume the reused preimage before returning.
+func blockToAdds(block *btcutil.Block, skiplist []uint32, visit func(*wire.LeafData)) {
+	var leaf wire.LeafData
 	var txonum uint32
 	for coinbase, tx := range block.Transactions() {
 		for outIdx, txOut := range tx.MsgTx().TxOut {
@@ -571,7 +588,7 @@ func BlockToAddLeaves(block *btcutil.Block, skiplist []uint32, outCount int) []w
 				Index: uint32(outIdx),
 			}
 
-			var leaf = wire.LeafData{
+			leaf = wire.LeafData{
 				BlockHash:  *block.Hash(),
 				OutPoint:   op,
 				Amount:     txOut.Value,
@@ -580,12 +597,10 @@ func BlockToAddLeaves(block *btcutil.Block, skiplist []uint32, outCount int) []w
 				IsCoinBase: coinbase == 0,
 			}
 
-			leaves = append(leaves, leaf)
+			visit(&leaf)
 			txonum++
 		}
 	}
-
-	return leaves
 }
 
 // ExcludedUtxo is the utxo that was excluded because it was spent and created

@@ -507,17 +507,11 @@ func (idx *FlatUtreexoProofIndex) ConnectBlock(dbTx database.Tx, block *btcutil.
 	if err != nil {
 		return err
 	}
-	adds := blockchain.BlockToAddLeaves(block, outskip, outCount)
+	addHashes := blockchain.BlockToAddHashes(block, outskip, outCount)
 
 	delHashes, err := wire.HashesFromLeafDatas(dels)
 	if err != nil {
 		return err
-	}
-
-	hasher := wire.NewLeafHasher()
-	addHashes := make([]utreexo.Leaf, len(adds))
-	for i := range adds {
-		addHashes[i] = utreexo.Leaf{Hash: hasher.HashLeaf(&adds[i]), Remember: false}
 	}
 
 	idx.mtx.Lock()
@@ -568,7 +562,7 @@ func (idx *FlatUtreexoProofIndex) ConnectBlock(dbTx database.Tx, block *btcutil.
 		return err
 	}
 
-	err = idx.addEmptyTTLs(block.Height(), int32(len(adds)))
+	err = idx.addEmptyTTLs(block.Height(), int32(len(addHashes)))
 	if err != nil {
 		return err
 	}

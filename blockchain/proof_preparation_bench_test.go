@@ -1,8 +1,10 @@
 package blockchain
 
 import (
+	"fmt"
 	"testing"
 
+	"github.com/utreexo/utreexo"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/txscript"
@@ -35,6 +37,59 @@ func BenchmarkBlockToDelLeaves(b *testing.B) {
 		leaves, err := BlockToDelLeaves(stxos, chain, block, nil)
 		if err != nil || len(leaves) != count {
 			b.Fatalf("got %d leaves: %v", len(leaves), err)
+		}
+	}
+}
+
+func BenchmarkProofAdditionHashes(b *testing.B) {
+	tx := wire.NewMsgTx(1)
+	for i := range 5000 {
+		tx.AddTxOut(&wire.TxOut{Value: int64(i), PkScript: []byte{txscript.OP_TRUE}})
+	}
+	block := btcutil.NewBlock(&wire.MsgBlock{Transactions: []*wire.MsgTx{tx}})
+	for _, direct := range []bool{false, true} {
+		b.Run(fmt.Sprintf("direct=%t", direct), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				var hashes []utreexo.Leaf
+				if direct {
+					hashes = BlockToAddHashes(block, nil, 5000)
+				} else {
+					leaves := BlockToAddLeaves(block, nil, 5000)
+					hasher := wire.NewLeafHasher()
+					hashes = make([]utreexo.Leaf, len(leaves))
+					for i := range leaves {
+						hashes[i].Hash = hasher.HashLeaf(&leaves[i])
+					}
+				}
+				if len(hashes) != 5000 {
+					b.Fatal("wrong add count")
+				}
+			}
+		})
+	}
+}
+
+func TestDirectAdditionHashes(t *testing.T) {
+	tx := wire.NewMsgTx(1)
+	for i := range 100 {
+		script := []byte{txscript.OP_TRUE}
+		if i%4 == 0 {
+			script = []byte{txscript.OP_RETURN}
+		}
+		tx.AddTxOut(&wire.TxOut{Value: int64(i), PkScript: script})
+	}
+	block := btcutil.NewBlock(&wire.MsgBlock{Transactions: []*wire.MsgTx{tx}})
+	block.SetHeight(10)
+	skip := []uint32{3, 11, 19}
+	leaves := BlockToAddLeaves(block, skip, 100)
+	hashes := BlockToAddHashes(block, skip, 100)
+	if len(hashes) != 72 || len(hashes) != len(leaves) {
+		t.Fatal("incorrect filtered additions")
+	}
+	for i := range leaves {
+		if hashes[i].Hash != leaves[i].LeafHash() || hashes[i].Remember {
+			t.Fatalf("addition %d differs", i)
 		}
 	}
 }
