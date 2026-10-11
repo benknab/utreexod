@@ -170,6 +170,7 @@ func (ff *FlatFileState) Init(path, dataName string) error {
 		if err != nil {
 			return err
 		}
+		offsetFileSize = (offsetFileSize / 8) * 8
 	}
 
 	// If the file size is bigger than 0, we're resuming and will read all
@@ -214,9 +215,15 @@ func (ff *FlatFileState) Init(path, dataName string) error {
 	}
 
 	// Test if we can fetch the last stored data.
-	_, err = ff.FetchData(ff.currentHeight)
+	data, err := ff.FetchData(ff.currentHeight)
 	if err == nil {
-		return nil
+		// A crash may leave an unreferenced (or partial) next record in
+		// the data file even when the last published offset is readable.
+		ff.currentOffset = 0
+		if ff.currentHeight > 0 {
+			ff.currentOffset = ff.offsets[ff.currentHeight] + 8 + int64(len(data))
+		}
+		return ff.dataFile.Truncate(ff.currentOffset)
 	}
 
 	// If we can't fetch the last stored data, recover to the last readable data.
@@ -403,14 +410,7 @@ func (ff *FlatFileState) DisconnectBlock(height int32) error {
 		return fmt.Errorf("read wrong magic of %x", buf[:4])
 	}
 
-	size := int64(binary.BigEndian.Uint32(buf[4:]))
-
-	dataFileSize, err := ff.dataFile.Seek(0, 2)
-	if err != nil {
-		return err
-	}
-
-	err = ff.dataFile.Truncate(dataFileSize - (size + 8))
+	err = ff.dataFile.Truncate(offset)
 	if err != nil {
 		return err
 	}
