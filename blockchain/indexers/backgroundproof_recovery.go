@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/utreexo/utreexo"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
@@ -192,36 +193,14 @@ func (b *BackgroundProofIndex) repairTTLs(block *btcutil.Block, restore bool) er
 			retained = append(retained, ld)
 		}
 	}
-	// Decode and hash each immutable creation block once. Keep only one
-	// creation block's commitments at a time, then apply repairs in the
-	// original deletion order so restore indexes retain their meaning.
-	byHeight := make(map[int32][]int)
-	for i := range retained {
-		byHeight[retained[i].Height] = append(byHeight[retained[i].Height], i)
-	}
-	indexes := make([]int32, len(retained))
+	delHashes := make([]utreexo.Hash, len(retained))
 	hasher := wire.NewLeafHasher()
-	for height, inputs := range byHeight {
-		creation, err := b.chain.BlockByHeightOnBranch(block.Hash(), height)
-		if err != nil {
-			return err
-		}
-		_, count, _, skip := blockchain.DedupeBlock(creation)
-		adds := blockchain.BlockToAddHashes(creation, skip, count)
-		positions := make(map[[32]byte]int32, len(adds))
-		for index := range adds {
-			// Preserve the first matching commitment, as the old scan did.
-			if _, exists := positions[adds[index].Hash]; !exists {
-				positions[adds[index].Hash] = int32(index)
-			}
-		}
-		for _, i := range inputs {
-			index, found := positions[hasher.HashLeaf(&retained[i])]
-			if !found {
-				return fmt.Errorf("cannot recover creation index for %v", retained[i].OutPoint)
-			}
-			indexes[i] = index
-		}
+	for i := range retained {
+		delHashes[i] = hasher.HashLeaf(&retained[i])
+	}
+	indexes, err := b.getCreateIndexes(block.Hash(), retained, delHashes)
+	if err != nil {
+		return err
 	}
 	for i, ld := range retained {
 		var data [ttlSize]byte

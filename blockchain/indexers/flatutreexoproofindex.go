@@ -1137,23 +1137,36 @@ func (idx *FlatUtreexoProofIndex) getUndoData(block *btcutil.Block) (
 
 // getCreateIndexes returns the indexes within the newly created leaves that the delhashes were at.
 func (idx *FlatUtreexoProofIndex) getCreateIndexes(tip *chainhash.Hash, lds []wire.LeafData, delHashes []utreexo.Hash) ([]int32, error) {
-	createIndexes := make([]int32, 0, len(lds))
+	if len(lds) != len(delHashes) {
+		return nil, fmt.Errorf("creation index lookup: %d leaves but %d hashes", len(lds), len(delHashes))
+	}
+	createIndexes := make([]int32, len(lds))
+	byHeight := make(map[int32][]int)
 	for i, ld := range lds {
-		stxoBlock, err := idx.chain.BlockByHeightOnBranch(tip, ld.Height)
+		byHeight[ld.Height] = append(byHeight[ld.Height], i)
+	}
+	// Keep one creation block's commitments at a time. Several inputs often
+	// share a source block, including during reorg and crash recovery.
+	for height, inputs := range byHeight {
+		stxoBlock, err := idx.chain.BlockByHeightOnBranch(tip, height)
 		if err != nil {
 			return nil, err
 		}
 
 		_, outCount, _, outskip := blockchain.DedupeBlock(stxoBlock)
-		adds := blockchain.BlockToAddLeaves(stxoBlock, outskip, outCount)
-		for j, add := range adds {
-			if add.LeafHash() == delHashes[i] {
-				createIndexes = append(createIndexes, int32(j))
-				break
+		adds := blockchain.BlockToAddHashes(stxoBlock, outskip, outCount)
+		positions := make(map[utreexo.Hash]int32, len(adds))
+		for j := range adds {
+			if _, exists := positions[adds[j].Hash]; !exists {
+				positions[adds[j].Hash] = int32(j)
 			}
 		}
-		if len(createIndexes) != i+1 {
-			return nil, fmt.Errorf("deleted leaf %x not found in block %v", delHashes[i], stxoBlock.Hash())
+		for _, i := range inputs {
+			position, found := positions[delHashes[i]]
+			if !found {
+				return nil, fmt.Errorf("deleted leaf %x not found in block %v", delHashes[i], stxoBlock.Hash())
+			}
+			createIndexes[i] = position
 		}
 	}
 
