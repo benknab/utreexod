@@ -38,3 +38,29 @@ func BenchmarkBlockToDelLeaves(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkProofDedupe(b *testing.B) {
+	msg := &wire.MsgBlock{Transactions: []*wire.MsgTx{{TxIn: []*wire.TxIn{{}}, TxOut: []*wire.TxOut{{Value: 1}}}}}
+	for i := range 2500 {
+		tx := wire.NewMsgTx(2)
+		for j := range 2 {
+			tx.AddTxIn(&wire.TxIn{PreviousOutPoint: wire.OutPoint{Index: uint32(i*2 + j)}})
+			tx.AddTxOut(&wire.TxOut{Value: int64(i + 1), PkScript: []byte{txscript.OP_TRUE}})
+		}
+		if i > 0 && i%2 == 0 {
+			tx.TxIn[0].PreviousOutPoint = wire.OutPoint{Hash: msg.Transactions[i].TxHash()}
+		}
+		msg.Transactions = append(msg.Transactions, tx)
+	}
+	block := btcutil.NewBlock(msg)
+	// Transaction IDs are cached in both measured versions.
+	DedupeBlock(block)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		ins, outs, skip, _ := DedupeBlock(block)
+		if ins != 5001 || outs != 5001 || len(skip) != 1249 {
+			b.Fatalf("unexpected deduplication: %d %d %d", ins, outs, len(skip))
+		}
+	}
+}

@@ -253,7 +253,13 @@ func BlockToDelOPs(
 func DedupeBlock(blk *btcutil.Block) (inCount, outCount int, inskip []uint32, outskip []uint32) {
 	var i uint32
 	// wire.Outpoints are comparable with == which is nice.
-	inmap := make(map[wire.OutPoint]uint32)
+	inputCapacity := 0
+	for coinbase, tx := range blk.Transactions() {
+		if coinbase != 0 {
+			inputCapacity += len(tx.MsgTx().TxIn)
+		}
+	}
+	inmap := make(map[wire.OutPoint]uint32, inputCapacity)
 
 	// go through txs then inputs building map
 	for coinbase, tx := range blk.Transactions() {
