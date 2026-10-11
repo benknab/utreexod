@@ -52,8 +52,29 @@ func TestTTLBatchHeaderCache(t *testing.T) {
 	require.ErrorContains(t, writeTTLs(101, indexes, lds, f), "wrong magic")
 }
 
+func TestTTLCoalescingPreservesOverwriteOrder(t *testing.T) {
+	f, lds, indexes := ttlBatchFixture(t, 2)
+	want := [][]byte{make([]byte, 5000*ttlSize), make([]byte, 5000*ttlSize)}
+	for i := range lds {
+		h := (i / 1000) % 2
+		lds[i].Height = int32(h + 1)
+		indexes[i] = int32(i % 1000)
+		offset := int(indexes[i]) * ttlSize
+		byteOrder.PutUint32(want[h][offset:], 100)
+		byteOrder.PutUint32(want[h][offset+4:], uint32(i))
+	}
+	require.NoError(t, writeTTLs(100, indexes, lds, f))
+	for h := range want {
+		got, err := f.FetchData(int32(h + 1))
+		require.NoError(t, err)
+		require.Equal(t, want[h], got)
+	}
+	indexes[0] = 1 << 29 // previously wrapped the int32 byte offset to zero
+	require.ErrorContains(t, writeTTLs(100, indexes, lds, f), "overwrite outside")
+}
+
 func BenchmarkTTLBatchHeaders(b *testing.B) {
-	for _, heights := range []int{1000, 5000} {
+	for _, heights := range []int{1, 1000, 5000} {
 		for _, cached := range []bool{false, true} {
 			b.Run(fmt.Sprintf("heights=%d/cached=%t", heights, cached), func(b *testing.B) {
 				f, lds, indexes := ttlBatchFixture(b, heights)
