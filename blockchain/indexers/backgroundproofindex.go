@@ -191,14 +191,37 @@ func (b *BackgroundProofIndex) run() {
 
 func (b *BackgroundProofIndex) process() error {
 	var plan *proofReplayIntent
+	var pending *proofReplayIntent
+	var prepared chan error
+	// A preparation may overlap only blocks covered by the old durable
+	// intent. Join before changing branches, checkpointing, or returning.
+	join := func() error {
+		if prepared == nil {
+			return nil
+		}
+		err := <-prepared
+		prepared = nil
+		if err == nil {
+			plan = pending
+		}
+		pending = nil
+		return err
+	}
+	defer func() { _ = join() }()
 	progress := newBlockProgressLogger("Proof indexed", log)
 	for {
 		select {
 		case <-b.quit:
+			if err := join(); err != nil {
+				return err
+			}
 			return b.checkpoint(true)
 		default:
 		}
 		if b.paused.Load() {
+			if err := join(); err != nil {
+				return err
+			}
 			if b.dirty || plan != nil {
 				if err := b.checkpoint(true); err != nil {
 					return err
@@ -212,6 +235,9 @@ func (b *BackgroundProofIndex) process() error {
 		// worker may finish a block concurrently disconnected by validation;
 		// the next iteration will undo it on that original branch.
 		if b.tip.Height >= 0 && !b.chain.MainChainHasBlock(&b.tip.Hash) {
+			if err := join(); err != nil {
+				return err
+			}
 			if err := b.disconnect(); err != nil {
 				return err
 			}
@@ -220,6 +246,9 @@ func (b *BackgroundProofIndex) process() error {
 		}
 		best := b.chain.BestSnapshot()
 		if b.tip.Height >= best.Height {
+			if err := join(); err != nil {
+				return err
+			}
 			if plan != nil || (b.dirty && time.Since(b.lastFlushTime) >= blockchain.UtxoFlushPeriodicInterval) {
 				if err := b.checkpoint(true); err != nil {
 					return err
@@ -228,6 +257,11 @@ func (b *BackgroundProofIndex) process() error {
 			}
 			b.wait(time.Second)
 			continue
+		}
+		if plan == nil || b.tip.Height >= plan.To.Height || !b.chain.MainChainHasBlock(&plan.To.Hash) {
+			if err := join(); err != nil {
+				return err
+			}
 		}
 		if plan == nil || b.tip.Height >= plan.To.Height || !b.chain.MainChainHasBlock(&plan.To.Hash) {
 			// Persist the intended branch before touching flat files. Batching
@@ -250,6 +284,28 @@ func (b *BackgroundProofIndex) process() error {
 			if err := b.prepare(plan); err != nil {
 				return err
 			}
+		}
+		// Queue the next bounded interval while up to 64 already-durable
+		// blocks remain. A busy validation writer can then overlap useful
+		// proof work. Never extend the active boundary until Flush succeeds.
+		if prepared == nil && plan.To.Height-b.tip.Height <= 64 && plan.To.Height < best.Height {
+			height := min(best.Height, plan.To.Height+128)
+			hash, err := b.chain.BlockHashByHeightOnBranch(&best.Hash, height)
+			if err != nil {
+				return err
+			}
+			ancestor, err := b.chain.BlockHashByHeightOnBranch(hash, plan.To.Height)
+			if err != nil || *ancestor != plan.To.Hash {
+				continue
+			}
+			pending = &proofReplayIntent{From: b.checkpointTip,
+				To: proofTip{Hash: *hash, Height: height}, FromStats: b.checkpointStats}
+			encoded, err := json.Marshal(pending)
+			if err != nil {
+				return err
+			}
+			prepared = make(chan error, 1)
+			go func(done chan<- error) { done <- b.persistIntent(encoded) }(prepared)
 		}
 		block, err := b.chain.BlockByHeightOnBranch(&plan.To.Hash, b.tip.Height+1)
 		if err != nil {
@@ -276,6 +332,9 @@ func (b *BackgroundProofIndex) process() error {
 		}
 		progress.LogBlockHeight(block)
 		if b.utreexoState.state.FlushNeeded() || time.Since(b.lastFlushTime) >= blockchain.UtxoFlushPeriodicInterval {
+			if err := join(); err != nil {
+				return err
+			}
 			if err := b.checkpoint(false); err != nil {
 				return err
 			}
@@ -315,7 +374,12 @@ func (b *BackgroundProofIndex) prepare(plan *proofReplayIntent) error {
 	if err != nil {
 		return err
 	}
-	err = b.db.Update(func(tx database.Tx) error {
+	return b.persistIntent(encoded)
+}
+
+// persistIntent uses only immutable input and the concurrency-safe database.
+func (b *BackgroundProofIndex) persistIntent(encoded []byte) error {
+	err := b.db.Update(func(tx database.Tx) error {
 		return tx.Metadata().Bucket(b.Key()).Put(proofReplayKey, encoded)
 	})
 	if err != nil {
