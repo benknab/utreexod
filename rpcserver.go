@@ -4760,6 +4760,9 @@ func handleVerifyUtxoChainTipInclusionProof(s *rpcServer, cmd interface{}, close
 		}
 	} else if s.cfg.FlatUtreexoProofIndex != nil {
 		err := s.cfg.FlatUtreexoProofIndex.VerifyAccProof(proof.HashesProven, proof.AccProof)
+		if errors.Is(err, indexers.ErrProofIndexNotReady) {
+			return nil, &btcjson.RPCError{Code: btcjson.ErrRPCInWarmup, Message: err.Error()}
+		}
 		if err != nil {
 			return false, nil
 		}

@@ -5,6 +5,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/blockchain"
+	"github.com/utreexo/utreexod/btcjson"
 	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/integration/rpctest"
 	"github.com/utreexo/utreexod/wire"
@@ -27,6 +30,13 @@ func TestBackgroundProofRPCAndServices(t *testing.T) {
 	require.Equal(t, int32(10), status.ValidatedHeight)
 	_, err = bridge.Client.GetUtreexoProof(blocks[9])
 	require.Error(t, err)
+	// Verification cannot declare a proof invalid just because the local
+	// accumulator has not reached the proof's (current validated) block.
+	proof := blockchain.ChainTipProof{ProvedAtHash: blocks[9], AccProof: &utreexo.Proof{}}
+	err = bridge.Client.VerifyUtxoChainTipInclusionProof(proof.String())
+	var rpcErr *btcjson.RPCError
+	require.ErrorAs(t, err, &rpcErr)
+	require.Equal(t, btcjson.ErrRPCInWarmup, rpcErr.Code)
 
 	observeServices := func() wire.ServiceFlag {
 		observer, err := rpctest.New(&chaincfg.RegressionNetParams, nil,
