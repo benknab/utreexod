@@ -89,16 +89,18 @@ func TestProofIntentPreparationOverlap(t *testing.T) {
 			case "pause":
 				f.worker.SetPaused(true)
 			case "reorg":
-				fork, err := f.chain.BlockByHeight(50)
+				// A shallow fork exercises pending-intent replacement without
+				// making the test dominated by dozens of durable undo syncs.
+				fork, err := f.chain.BlockByHeight(120)
 				require.NoError(t, err)
 				next, _ := blockchain.NewBlock(f.chain, fork, nil)
 				next.MsgBlock().Header.Timestamp = next.MsgBlock().Header.Timestamp.Add(time.Second)
 				require.True(t, blockchain.SolveBlock(&next.MsgBlock().Header))
 				fork = btcutil.NewBlock(next.MsgBlock())
-				fork.SetHeight(51)
+				fork.SetHeight(121)
 				_, _, err = f.chain.ProcessBlock(fork, blockchain.BFNone)
 				require.NoError(t, err)
-				for range 139 {
+				for range 69 {
 					fork, _ = f.add(fork, nil)
 				}
 			case "stop":
