@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/utreexo/utreexod/blockchain/internal/sizehelper"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
@@ -18,165 +17,90 @@ import (
 	"github.com/utreexo/utreexod/wire"
 )
 
-// mapSlice is a slice of maps for utxo entries.  The slice of maps are needed to
-// guarantee that the map will only take up N amount of bytes.  As of v1.20, the
-// go runtime will allocate 2^N + few extra buckets, meaning that for large N, we'll
-// allocate a lot of extra memory if the amount of entries goes over the previously
-// allocated buckets.  A slice of maps allows us to have a better control of how much
-// total memory gets allocated by all the maps.
-type mapSlice struct {
-	// mtx protects against concurrent access for the map slice.
-	mtx sync.Mutex
+// utxoCacheMap grows on demand. Go 1.24+ maps grow individual Swiss tables,
+// including under insert/delete churn, so the old preallocation hint is not
+// a reliable measure of retained map memory.
+type utxoCacheMap struct {
+	mtx     sync.RWMutex
+	entries map[wire.OutPoint]*UtxoEntry
 
-	// maps are the underlying maps in the slice of maps.
-	maps []map[wire.OutPoint]*UtxoEntry
-
-	// maxEntries is the maximum amount of elemnts that the map is allocated for.
-	maxEntries []int
-
-	// maxTotalMemoryUsage is the maximum memory usage in bytes that the state
-	// should contain in normal circumstances.
-	maxTotalMemoryUsage uint64
+	// Charge new insertions until the map is released, even if their keys
+	// are later deleted. Deleting a key does not release backing tables.
+	// This is a conservative flush estimate, not a process memory limit.
+	insertions uint64
 }
 
-// length returns the length of all the maps in the map slice added together.
+// Budget 128 bytes per new outpoint for map slots, control bytes, directory,
+// table headers, allocator rounding, and partially occupied tables. The key
+// and pointer alone need 48 bytes on 64-bit Go. Entry objects and scripts are
+// accounted separately. Avoid depending on private Go runtime layouts.
+const utxoMapInsertionSize = 128
+
+// length returns the number of cached outpoints.
 //
 // This function is safe for concurrent access.
-func (ms *mapSlice) length() int {
-	ms.mtx.Lock()
-	defer ms.mtx.Unlock()
-
-	var l int
-	for _, m := range ms.maps {
-		l += len(m)
-	}
-
-	return l
+func (m *utxoCacheMap) length() int {
+	m.mtx.RLock()
+	defer m.mtx.RUnlock()
+	return len(m.entries)
 }
 
-// size returns the size of all the maps in the map slice added together.
+// size returns the conservative map memory charge, excluding entry objects.
 //
 // This function is safe for concurrent access.
-func (ms *mapSlice) size() int {
-	ms.mtx.Lock()
-	defer ms.mtx.Unlock()
-
-	var size int
-	for _, num := range ms.maxEntries {
-		size += sizehelper.CalculateRoughMapSize(num, sizehelper.UtxoCacheBucketSize)
+func (m *utxoCacheMap) size() uint64 {
+	m.mtx.RLock()
+	defer m.mtx.RUnlock()
+	if m.entries == nil {
+		return 0
 	}
-
-	return size
+	return 512 + m.insertions*utxoMapInsertionSize
 }
 
-// get looks for the outpoint in all the maps in the map slice and returns
-// the entry.  nil and false is returned if the outpoint is not found.
+// get returns the entry and whether the outpoint is cached, including nil misses.
 //
 // This function is safe for concurrent access.
-func (ms *mapSlice) get(op wire.OutPoint) (*UtxoEntry, bool) {
-	ms.mtx.Lock()
-	defer ms.mtx.Unlock()
-
-	var entry *UtxoEntry
-	var found bool
-
-	for _, m := range ms.maps {
-		entry, found = m[op]
-		if found {
-			return entry, found
-		}
-	}
-
+func (m *utxoCacheMap) get(op wire.OutPoint) (*UtxoEntry, bool) {
+	m.mtx.RLock()
+	defer m.mtx.RUnlock()
+	entry, found := m.entries[op]
 	return entry, found
 }
 
-// put puts the outpoint and the entry into one of the maps in the map slice.  If the
-// existing maps are all full, it will allocate a new map based on how much memory we
-// have left over.  Leftover memory is calculated as:
-// maxTotalMemoryUsage - (totalEntryMemory + mapSlice.size())
+// put stores an entry and returns the previous entry, if any.
 //
 // This function is safe for concurrent access.
-func (ms *mapSlice) put(op wire.OutPoint, entry *UtxoEntry, totalEntryMemory uint64) {
-	ms.mtx.Lock()
-	defer ms.mtx.Unlock()
-
-	// Look for the key in the maps.
-	for i := range ms.maxEntries {
-		m := ms.maps[i]
-		_, found := m[op]
-		if found {
-			// If the key is found, overwrite it.
-			m[op] = entry
-			return // Return as we were successful in adding the entry.
-		}
+func (m *utxoCacheMap) put(op wire.OutPoint, entry *UtxoEntry) *UtxoEntry {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	if m.entries == nil {
+		m.entries = make(map[wire.OutPoint]*UtxoEntry)
 	}
-
-	for i, maxNum := range ms.maxEntries {
-		m := ms.maps[i]
-		if len(m) >= maxNum {
-			// Don't try to insert if the map already at max since
-			// that'll force the map to allocate double the memory it's
-			// currently taking up.
-			continue
-		}
-
-		m[op] = entry
-		return // Return as we were successful in adding the entry.
+	previous, found := m.entries[op]
+	if !found {
+		m.insertions++
 	}
-
-	// We only reach this code if we've failed to insert into the map above as
-	// all the current maps were full.  We thus make a new map and insert into
-	// it.
-	m := ms.makeNewMap(totalEntryMemory)
-	m[op] = entry
+	m.entries[op] = entry
+	return previous
 }
 
-// delete attempts to delete the given outpoint in all of the maps. No-op if the
-// outpoint doesn't exist.
+// delete removes an outpoint without reducing the retained map memory charge.
 //
 // This function is safe for concurrent access.
-func (ms *mapSlice) delete(op wire.OutPoint) {
-	ms.mtx.Lock()
-	defer ms.mtx.Unlock()
-
-	for i := 0; i < len(ms.maps); i++ {
-		delete(ms.maps[i], op)
-	}
+func (m *utxoCacheMap) delete(op wire.OutPoint) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	delete(m.entries, op)
 }
 
-// makeNewMap makes and appends the new map into the map slice.
-//
-// This function is NOT safe for concurrent access and must be called with the
-// lock held.
-func (ms *mapSlice) makeNewMap(totalEntryMemory uint64) map[wire.OutPoint]*UtxoEntry {
-	// Get the size of the leftover memory.
-	memSize := ms.maxTotalMemoryUsage - totalEntryMemory
-	for _, maxNum := range ms.maxEntries {
-		memSize -= uint64(sizehelper.CalculateRoughMapSize(maxNum, sizehelper.UtxoCacheBucketSize))
-	}
-
-	// Get a new map that's sized to house inside the leftover memory.
-	// -1 on the returned value will make the map allocate half as much total
-	// bytes.  This is done to make sure there's still room left for utxo
-	// entries to take up.
-	numMaxElements := sizehelper.CalculateMinEntries(int(memSize), sizehelper.UtxoCacheBucketSize+sizehelper.AvgEntrySize)
-	numMaxElements -= 1
-	ms.maxEntries = append(ms.maxEntries, numMaxElements)
-	ms.maps = append(ms.maps, make(map[wire.OutPoint]*UtxoEntry, numMaxElements))
-
-	return ms.maps[len(ms.maps)-1]
-}
-
-// deleteMaps deletes all maps except for the first one which should be the biggest.
+// clear releases the map's backing storage for collection after a full flush.
 //
 // This function is safe for concurrent access.
-func (ms *mapSlice) deleteMaps() {
-	ms.mtx.Lock()
-	defer ms.mtx.Unlock()
-
-	size := ms.maxEntries[0]
-	ms.maxEntries = []int{size}
-	ms.maps = ms.maps[:1]
+func (m *utxoCacheMap) clear() {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	m.entries = nil
+	m.insertions = 0
 }
 
 const (
@@ -219,7 +143,7 @@ type utxoCache struct {
 	// flag indicates that the state of the entry (potentially) deviates from the
 	// state in the database.  Explicit nil values in the map are used to
 	// indicate that the database does not contain the entry.
-	cachedEntries    mapSlice
+	cachedEntries    utxoCacheMap
 	totalEntryMemory uint64 // Total memory usage in bytes.
 
 	// Below fields are used to indicate when the last flush happened.
@@ -230,23 +154,9 @@ type utxoCache struct {
 // newUtxoCache initiates a new utxo cache instance with its memory usage limited
 // to the given maximum.
 func newUtxoCache(db database.DB, maxTotalMemoryUsage uint64) *utxoCache {
-	// While the entry isn't included in the map size, add the average size to the
-	// bucket size so we get some leftover space for entries to take up.
-	numMaxElements := sizehelper.CalculateMinEntries(int(maxTotalMemoryUsage), sizehelper.UtxoCacheBucketSize+sizehelper.AvgEntrySize)
-	numMaxElements -= 1
-
-	log.Infof("Pre-alloacting for %d MiB: ", maxTotalMemoryUsage/(1024*1024)+1)
-
-	m := make(map[wire.OutPoint]*UtxoEntry, numMaxElements)
-
 	return &utxoCache{
 		db:                  db,
 		maxTotalMemoryUsage: maxTotalMemoryUsage,
-		cachedEntries: mapSlice{
-			maps:                []map[wire.OutPoint]*UtxoEntry{m},
-			maxEntries:          []int{numMaxElements},
-			maxTotalMemoryUsage: maxTotalMemoryUsage,
-		},
 	}
 }
 
@@ -254,7 +164,7 @@ func newUtxoCache(db database.DB, maxTotalMemoryUsage uint64) *utxoCache {
 func (s *utxoCache) totalMemoryUsage() uint64 {
 	// Total memory is the map size + the size that the utxo entries are
 	// taking up.
-	size := uint64(s.cachedEntries.size())
+	size := s.cachedEntries.size()
 	size += s.totalEntryMemory
 
 	return size
@@ -320,7 +230,14 @@ func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error
 	// as a miss; this prevents future lookups to perform the same database
 	// fetch.
 	for i := range dbEntries {
-		s.cachedEntries.put(missingOps[i], dbEntries[i], s.totalEntryMemory)
+		// Repeated outpoints in the request must share the same entry and
+		// memory charge. A spent flag set through either reference must be
+		// visible through both.
+		if entry, ok := s.cachedEntries.get(missingOps[i]); ok {
+			dbEntries[i] = entry
+			continue
+		}
+		s.cachedEntries.put(missingOps[i], dbEntries[i])
 		s.totalEntryMemory += dbEntries[i].memoryUsage()
 	}
 
@@ -359,7 +276,8 @@ func (s *utxoCache) addTxOut(outpoint wire.OutPoint, txOut *wire.TxOut, isCoinBa
 		entry.packedFlags |= tfCoinBase
 	}
 
-	s.cachedEntries.put(outpoint, entry, s.totalEntryMemory)
+	previous := s.cachedEntries.put(outpoint, entry)
+	s.totalEntryMemory -= previous.memoryUsage()
 	s.totalEntryMemory += entry.memoryUsage()
 
 	return nil
@@ -498,43 +416,38 @@ func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) error {
 	// NOTE: The database has its own cache which gets atomically written
 	// to leveldb.
 	utxoBucket := dbTx.Metadata().Bucket(utxoSetBucketName)
-	for i := range s.cachedEntries.maps {
-		for outpoint, entry := range s.cachedEntries.maps[i] {
-			// If the entry is nil or spent, remove the entry from the database
-			// and the cache.
-			if entry == nil || entry.IsSpent() {
-				err := dbDeleteUtxoEntry(utxoBucket, outpoint)
-				if err != nil {
-					return err
-				}
-				delete(s.cachedEntries.maps[i], outpoint)
-
-				continue
-			}
-
-			// No need to update the cache if the entry was not modified.
-			if !entry.isModified() {
-				delete(s.cachedEntries.maps[i], outpoint)
-				continue
-			}
-
-			// Entry is fresh and needs to be put into the database.
-			err := dbPutUtxoEntry(utxoBucket, outpoint, entry)
+	for outpoint, entry := range s.cachedEntries.entries {
+		// If the entry is nil or spent, remove the entry from the database
+		// and the cache.
+		if entry == nil || entry.IsSpent() {
+			err := dbDeleteUtxoEntry(utxoBucket, outpoint)
 			if err != nil {
 				return err
 			}
-			delete(s.cachedEntries.maps[i], outpoint)
+
+			continue
+		}
+
+		// No need to update the cache if the entry was not modified.
+		if !entry.isModified() {
+			continue
+		}
+
+		// Entry is fresh and needs to be put into the database.
+		err := dbPutUtxoEntry(utxoBucket, outpoint, entry)
+		if err != nil {
+			return err
 		}
 	}
-	s.cachedEntries.deleteMaps()
-	s.totalEntryMemory = 0
-
 	// When done, store the best state hash in the database to indicate the state
 	// is consistent until that hash.
 	err := dbPutUtxoStateConsistency(dbTx, &bestState.Hash)
 	if err != nil {
 		return err
 	}
+
+	s.cachedEntries.clear()
+	s.totalEntryMemory = 0
 
 	// The best state is the new last flush hash.
 	s.lastFlushHash = bestState.Hash

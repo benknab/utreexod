@@ -108,7 +108,7 @@ func CalculateRoughMapSize(hint int, bucketSize uintptr) int {
 		// used with this value of b.
 		numBuckets += bucketShift(B - 4)
 		sz := bucketSize * numBuckets
-		up := roundupsize(sz)
+		up := RoundupSize(sz)
 		if up != sz {
 			numBuckets = up / bucketSize
 		}
@@ -214,8 +214,9 @@ func alignUp(n, a uintptr) uintptr {
 	return (n + a - 1) &^ (a - 1)
 }
 
-// Returns size of the memory block that mallocgc will allocate if you ask for the size.
-func roundupsize(size uintptr) uintptr {
+// RoundupSize estimates the allocator size class for an allocation of size
+// bytes. This includes padding beyond the logical size of scripts and entries.
+func RoundupSize(size uintptr) uintptr {
 	if size < _MaxSmallSize {
 		if size <= smallSizeMax-8 {
 			return uintptr(class_to_size[size_to_class8[divRoundUp(size, smallSizeDiv)]])

@@ -22,7 +22,7 @@ import (
 	"github.com/utreexo/utreexod/wire"
 )
 
-func TestMapSlice(t *testing.T) {
+func TestUtxoCacheMap(t *testing.T) {
 	tests := []struct {
 		keys []wire.OutPoint
 	}{
@@ -45,25 +45,17 @@ func TestMapSlice(t *testing.T) {
 	for _, test := range tests {
 		m := make(map[wire.OutPoint]*UtxoEntry)
 
-		maxSize := sizehelper.CalculateRoughMapSize(1000, sizehelper.UtxoCacheBucketSize)
-
-		maxEntriesFirstMap := 500
-		ms1 := make(map[wire.OutPoint]*UtxoEntry, maxEntriesFirstMap)
-		ms := mapSlice{
-			maps:                []map[wire.OutPoint]*UtxoEntry{ms1},
-			maxEntries:          []int{maxEntriesFirstMap},
-			maxTotalMemoryUsage: uint64(maxSize),
-		}
+		var ms utxoCacheMap
 
 		for _, key := range test.keys {
 			m[key] = nil
-			ms.put(key, nil, 0)
+			ms.put(key, nil)
 		}
 
-		// Put in the same elements twice to test that the map slice won't hold duplicates.
+		// Put in the same elements twice to test that the cache won't hold duplicates.
 		for _, key := range test.keys {
 			m[key] = nil
-			ms.put(key, nil, 0)
+			ms.put(key, nil)
 		}
 
 		if len(m) != ms.length() {
@@ -74,8 +66,8 @@ func TestMapSlice(t *testing.T) {
 		ms.delete(test.keys[0])
 		delete(m, test.keys[0])
 
-		// Try to insert the last element in the mapslice again.
-		ms.put(test.keys[len(test.keys)-1], &UtxoEntry{}, 0)
+		// Try to insert the last element in the cache again.
+		ms.put(test.keys[len(test.keys)-1], &UtxoEntry{})
 		m[test.keys[len(test.keys)-1]] = &UtxoEntry{}
 
 		// Check that the duplicate didn't make it in.
@@ -83,7 +75,7 @@ func TestMapSlice(t *testing.T) {
 			t.Fatalf("expected len of %d, got %d", len(m), ms.length())
 		}
 
-		ms.put(test.keys[0], &UtxoEntry{}, 0)
+		ms.put(test.keys[0], &UtxoEntry{})
 		m[test.keys[0]] = &UtxoEntry{}
 
 		if len(m) != ms.length() {
@@ -98,7 +90,7 @@ func TestMapSlice(t *testing.T) {
 
 			got, found := ms.get(key)
 			if !found {
-				t.Fatalf("expected key %s to exist in the map slice", key.String())
+				t.Fatalf("expected key %s to exist in the cache", key.String())
 			}
 
 			if !reflect.DeepEqual(got, expected) {
@@ -108,9 +100,9 @@ func TestMapSlice(t *testing.T) {
 	}
 }
 
-// TestMapsliceConcurrency just tests that the mapslice won't result in a panic
+// TestUtxoCacheMapConcurrency tests that the map won't result in a panic
 // on concurrent access.
-func TestMapsliceConcurrency(t *testing.T) {
+func TestUtxoCacheMapConcurrency(t *testing.T) {
 	tests := []struct {
 		keys []wire.OutPoint
 	}{
@@ -131,36 +123,28 @@ func TestMapsliceConcurrency(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		maxSize := sizehelper.CalculateRoughMapSize(1000, sizehelper.UtxoCacheBucketSize)
-
-		maxEntriesFirstMap := 500
-		ms1 := make(map[wire.OutPoint]*UtxoEntry, maxEntriesFirstMap)
-		ms := mapSlice{
-			maps:                []map[wire.OutPoint]*UtxoEntry{ms1},
-			maxEntries:          []int{maxEntriesFirstMap},
-			maxTotalMemoryUsage: uint64(maxSize),
-		}
+		var ms utxoCacheMap
 
 		var wg sync.WaitGroup
 
 		wg.Add(1)
-		go func(m *mapSlice, keys []wire.OutPoint) {
+		go func(m *utxoCacheMap, keys []wire.OutPoint) {
 			defer wg.Done()
 			for i := 0; i < 5000; i++ {
-				m.put(keys[i], nil, 0)
+				m.put(keys[i], nil)
 			}
 		}(&ms, test.keys)
 
 		wg.Add(1)
-		go func(m *mapSlice, keys []wire.OutPoint) {
+		go func(m *utxoCacheMap, keys []wire.OutPoint) {
 			defer wg.Done()
 			for i := 5000; i < 10000; i++ {
-				m.put(keys[i], nil, 0)
+				m.put(keys[i], nil)
 			}
 		}(&ms, test.keys)
 
 		wg.Add(1)
-		go func(m *mapSlice) {
+		go func(m *utxoCacheMap) {
 			defer wg.Done()
 			for i := 0; i < 10000; i++ {
 				m.size()
@@ -168,7 +152,7 @@ func TestMapsliceConcurrency(t *testing.T) {
 		}(&ms)
 
 		wg.Add(1)
-		go func(m *mapSlice) {
+		go func(m *utxoCacheMap) {
 			defer wg.Done()
 			for i := 0; i < 10000; i++ {
 				m.length()
@@ -176,7 +160,7 @@ func TestMapsliceConcurrency(t *testing.T) {
 		}(&ms)
 
 		wg.Add(1)
-		go func(m *mapSlice, keys []wire.OutPoint) {
+		go func(m *utxoCacheMap, keys []wire.OutPoint) {
 			defer wg.Done()
 			for i := 0; i < 10000; i++ {
 				m.get(keys[i])
@@ -184,7 +168,7 @@ func TestMapsliceConcurrency(t *testing.T) {
 		}(&ms, test.keys)
 
 		wg.Add(1)
-		go func(m *mapSlice, keys []wire.OutPoint) {
+		go func(m *utxoCacheMap, keys []wire.OutPoint) {
 			defer wg.Done()
 			for i := 0; i < 5000; i++ {
 				m.delete(keys[i])
@@ -252,7 +236,7 @@ func TestUtxoCacheEntrySize(t *testing.T) {
 					},
 				}
 			}(),
-			expectedSize: sizehelper.PubKeyHashLen + sizehelper.BaseEntrySize,
+			expectedSize: uint64(sizehelper.RoundupSize(sizehelper.PubKeyHashLen) + sizehelper.RoundupSize(sizehelper.BaseEntrySize)),
 		},
 		{
 			name: "10 entries, 4 spend",
@@ -282,7 +266,7 @@ func TestUtxoCacheEntrySize(t *testing.T) {
 				return blocks
 			}(),
 			// Multipled by 6 since we'll have 6 entries left.
-			expectedSize: (sizehelper.PubKeyHashLen + sizehelper.BaseEntrySize) * 6,
+			expectedSize: uint64(sizehelper.RoundupSize(sizehelper.PubKeyHashLen)+sizehelper.RoundupSize(sizehelper.BaseEntrySize)) * 6,
 		},
 		{
 			name: "spend everything",
@@ -396,7 +380,6 @@ func utxoCacheTestChain(testName string) (*BlockChain, *chaincfg.Params, func())
 
 	chain.TstSetCoinbaseMaturity(1)
 	chain.utxoCache.maxTotalMemoryUsage = 10 * 1024 * 1024
-	chain.utxoCache.cachedEntries.maxTotalMemoryUsage = chain.utxoCache.maxTotalMemoryUsage
 
 	return chain, &params, tearDown
 }
@@ -440,17 +423,15 @@ func TestUtxoCacheFlush(t *testing.T) {
 	}
 
 	// All entries should be fresh and modified.
-	for _, m := range cache.cachedEntries.maps {
-		for outpoint, entry := range m {
-			if entry == nil {
-				t.Fatalf("Unexpected nil entry found for %v", outpoint)
-			}
-			if !entry.isModified() {
-				t.Fatal("Entry should be marked mofified")
-			}
-			if !entry.isFresh() {
-				t.Fatal("Entry should be marked fresh")
-			}
+	for outpoint, entry := range cache.cachedEntries.entries {
+		if entry == nil {
+			t.Fatalf("Unexpected nil entry found for %v", outpoint)
+		}
+		if !entry.isModified() {
+			t.Fatal("Entry should be marked mofified")
+		}
+		if !entry.isFresh() {
+			t.Fatal("Entry should be marked fresh")
 		}
 	}
 
@@ -512,17 +493,15 @@ func TestUtxoCacheFlush(t *testing.T) {
 	}
 
 	// Check that the fetched entries in the cache are not marked fresh and modified.
-	for _, m := range cache.cachedEntries.maps {
-		for outpoint, elem := range m {
-			if elem == nil {
-				t.Fatalf("Unexpected nil entry found for %v", outpoint)
-			}
-			if elem.isFresh() {
-				t.Fatal("Entry should not be marked fresh")
-			}
-			if elem.isModified() {
-				t.Fatal("Entry should not be marked modified")
-			}
+	for outpoint, elem := range cache.cachedEntries.entries {
+		if elem == nil {
+			t.Fatalf("Unexpected nil entry found for %v", outpoint)
+		}
+		if elem.isFresh() {
+			t.Fatal("Entry should not be marked fresh")
+		}
+		if elem.isModified() {
+			t.Fatal("Entry should not be marked modified")
 		}
 	}
 
@@ -703,7 +682,6 @@ func TestFlushOnPrune(t *testing.T) {
 	defer tearDown()
 
 	chain.utxoCache.maxTotalMemoryUsage = 10 * 1024 * 1024
-	chain.utxoCache.cachedEntries.maxTotalMemoryUsage = chain.utxoCache.maxTotalMemoryUsage
 
 	// Set the maxBlockFileSize and the prune target small so that we can trigger a
 	// prune to happen.
@@ -824,7 +802,6 @@ func TestInitConsistentState(t *testing.T) {
 	}
 	defer tearDown()
 	chain.utxoCache.maxTotalMemoryUsage = 10 * 1024 * 1024
-	chain.utxoCache.cachedEntries.maxTotalMemoryUsage = chain.utxoCache.maxTotalMemoryUsage
 
 	// Read blocks from the file.
 	blocks, err := loadBlocks("blk_0_to_14131.dat")
