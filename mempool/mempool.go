@@ -507,6 +507,9 @@ func (mp *TxPool) HaveTransaction(hash *chainhash.Hash) bool {
 //
 // This function MUST be called with the mempool lock held (for writes).
 func (mp *TxPool) removeTransaction(tx *btcutil.Tx, removeRedeemers bool) {
+	if len(mp.pool) == 0 {
+		return
+	}
 	txHash := tx.Hash()
 	if removeRedeemers {
 		// Remove any transactions which rely on this one.
@@ -563,6 +566,12 @@ func (mp *TxPool) RemoveTransaction(tx *btcutil.Tx, removeRedeemers bool) {
 func (mp *TxPool) RemoveDoubleSpends(tx *btcutil.Tx) {
 	// Protect concurrent access.
 	mp.mtx.Lock()
+	// During IBD the pool is normally empty. Avoid scanning block inputs
+	// when there are no unconfirmed spends to conflict with (Core #32827).
+	if len(mp.outpoints) == 0 {
+		mp.mtx.Unlock()
+		return
+	}
 	for _, txIn := range tx.MsgTx().TxIn {
 		if txRedeemer, ok := mp.outpoints[txIn.PreviousOutPoint]; ok {
 			if !txRedeemer.Hash().IsEqual(tx.Hash()) {
@@ -1147,6 +1156,11 @@ func (mp *TxPool) MaybeAcceptTransaction(tx *btcutil.Tx, utreexoData *wire.UData
 //
 // This function MUST be called with the mempool lock held (for writes).
 func (mp *TxPool) processOrphans(acceptedTx *btcutil.Tx) []*TxDesc {
+	// Test the orphan pool independently of the main pool: an empty main
+	// pool may still have orphans unlocked by a newly confirmed transaction.
+	if len(mp.orphans) == 0 {
+		return nil
+	}
 	var acceptedTxns []*TxDesc
 
 	// Start with processing at least the passed transaction.
