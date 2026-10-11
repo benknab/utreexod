@@ -41,3 +41,20 @@ func TestRecoverUnpublishedFlatTail(t *testing.T) {
 		})
 	}
 }
+
+func TestRawProofStatsSurviveReopen(t *testing.T) {
+	path := t.TempDir()
+	ff := NewFlatFileState()
+	require.NoError(t, ff.Init(path, "stats"))
+	stats := ProofStats{BlockHeight: 123, TotalDels: 456, ProofCount: 789}
+	require.NoError(t, stats.WritePStats(ff))
+	require.NoError(t, ff.dataFile.Close())
+	require.NoError(t, ff.offsetFile.Close())
+	ff = NewFlatFileState()
+	require.NoError(t, ff.Init(path, "stats"))
+	defer ff.dataFile.Close()
+	defer ff.offsetFile.Close()
+	var got ProofStats
+	require.NoError(t, got.InitPStats(ff))
+	require.Equal(t, stats, got)
+}

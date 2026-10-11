@@ -220,9 +220,13 @@ func (ff *FlatFileState) Init(path, dataName string) error {
 		// A crash may leave an unreferenced (or partial) next record in
 		// the data file even when the last published offset is readable.
 		ff.currentOffset = 0
-		if ff.currentHeight > 0 {
-			ff.currentOffset = ff.offsets[ff.currentHeight] + 8 + int64(len(data))
+		if ff.currentHeight == 0 {
+			// No framed record is published. Start the next append at
+			// zero, but retain raw statistics that also use these handles
+			// without an offset table. A framed append overwrites any tail.
+			return nil
 		}
+		ff.currentOffset = ff.offsets[ff.currentHeight] + 8 + int64(len(data))
 		return ff.dataFile.Truncate(ff.currentOffset)
 	}
 
