@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/utreexo/utreexod/blockchain/internal/sizehelper"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
@@ -110,6 +111,10 @@ const (
 	// block download is complete and it's useful to flush periodically in case
 	// of unforseen shutdowns.
 	UtxoFlushPeriodicInterval = time.Minute * 5
+
+	// UtxoSyncInterval bounds recovery replay during IBD without discarding
+	// the warm read cache, following Core #30611.
+	UtxoSyncInterval = time.Hour
 )
 
 // FlushMode is used to indicate the different urgency types for a flush.
@@ -130,6 +135,10 @@ const (
 	// size.  This is used mostly internally in between operations that can
 	// increase the cache size.
 	FlushIfNeeded
+
+	// FlushSync persists dirty entries while retaining clean cached entries.
+	// If the cache is full, its backing storage is released as usual.
+	FlushSync
 )
 
 // utxoCache is a cached utxo view in the chainstate of a BlockChain.
@@ -147,6 +156,11 @@ type utxoCache struct {
 	cachedEntries    utxoCacheMap
 	totalEntryMemory uint64 // Total memory usage in bytes.
 
+	// Track modified outpoints for O(dirty) synchronization (Core #28233).
+	// Deleted fresh entries can leave stale keys here; these are skipped on
+	// flush. Charge the backing slice as well as the cache map to bound churn.
+	dirtyOutpoints []wire.OutPoint
+
 	// Below fields are used to indicate when the last flush happened.
 	lastFlushHash chainhash.Hash
 	lastFlushTime time.Time
@@ -158,6 +172,7 @@ func newUtxoCache(db database.DB, maxTotalMemoryUsage uint64) *utxoCache {
 	return &utxoCache{
 		db:                  db,
 		maxTotalMemoryUsage: maxTotalMemoryUsage,
+		lastFlushTime:       time.Now(),
 	}
 }
 
@@ -167,6 +182,7 @@ func (s *utxoCache) totalMemoryUsage() uint64 {
 	// taking up.
 	size := s.cachedEntries.size()
 	size += s.totalEntryMemory
+	size += uint64(sizehelper.RoundupSize(uintptr(cap(s.dirtyOutpoints)) * sizehelper.OutpointSize))
 
 	return size
 }
@@ -311,6 +327,15 @@ func (s *utxoCache) addTxOut(outpoint wire.OutPoint, txOut *wire.TxOut, isCoinBa
 	}
 
 	previous := s.cachedEntries.put(outpoint, entry)
+	if previous == nil || !previous.isModified() {
+		s.dirtyOutpoints = append(s.dirtyOutpoints, outpoint)
+	}
+	// A warm, persisted entry may be overwritten during a reorg or for a
+	// historical duplicate txid. Spending its replacement still needs to
+	// delete the old database entry, even before the next synchronization.
+	if previous != nil && !previous.isFresh() {
+		entry.packedFlags &^= tfFresh
+	}
 	s.totalEntryMemory -= previous.memoryUsage()
 	s.totalEntryMemory += entry.memoryUsage()
 
@@ -373,6 +398,9 @@ func (s *utxoCache) addTxIn(txIn *wire.TxIn, stxos *[]SpentTxOut) error {
 	}
 
 	// Mark the entry as spent.
+	if !entry.isModified() {
+		s.dirtyOutpoints = append(s.dirtyOutpoints, txIn.PreviousOutPoint)
+	}
 	entry.Spend()
 
 	// If an entry is fresh it indicates that this entry was spent before it could be
@@ -381,11 +409,6 @@ func (s *utxoCache) addTxIn(txIn *wire.TxIn, stxos *[]SpentTxOut) error {
 	if entry.isFresh() {
 		// If the entry is fresh, we will always have it in the cache.
 		s.cachedEntries.delete(txIn.PreviousOutPoint)
-		s.totalEntryMemory -= entry.memoryUsage()
-	} else {
-		// Can leave the entry to be garbage collected as the only purpose
-		// of this entry now is so that the entry on disk can be deleted.
-		entry = nil
 		s.totalEntryMemory -= entry.memoryUsage()
 	}
 
@@ -447,15 +470,19 @@ func (s *utxoCache) connectTransactions(block *btcutil.Block, stxos *[]SpentTxOu
 // writeCache stages cached entries in the database transaction. Its returned
 // callback must run only after the transaction commits successfully, while the
 // chain lock is still held. A rollback must leave the cache available for retry.
-func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) (func(), error) {
+func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState, retain bool) (func(), error) {
 	// Update commits and flushes the cache to the database.
 	// NOTE: The database has its own cache which gets atomically written
 	// to leveldb.
 	utxoBucket := dbTx.Metadata().Bucket(utxoSetBucketName)
-	for outpoint, entry := range s.cachedEntries.entries {
-		// If the entry is nil or spent, remove the entry from the database
-		// and the cache.
-		if entry == nil || entry.IsSpent() {
+	for _, outpoint := range s.dirtyOutpoints {
+		entry, _ := s.cachedEntries.get(outpoint)
+		// Fresh entries spent before reaching the database were removed
+		// from the cache already. Clean nil misses never need a delete.
+		if entry == nil {
+			continue
+		}
+		if entry.IsSpent() {
 			err := dbDeleteUtxoEntry(utxoBucket, outpoint)
 			if err != nil {
 				return nil, err
@@ -483,8 +510,26 @@ func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) (func(), 
 	}
 
 	return func() {
-		s.cachedEntries.clear()
-		s.totalEntryMemory = 0
+		if !retain {
+			s.cachedEntries.clear()
+			s.totalEntryMemory = 0
+		} else {
+			// Keep clean unspent entries warm (Core #28280). Clear fresh
+			// along with modified: subsequent spends must reach the DB.
+			for _, outpoint := range s.dirtyOutpoints {
+				entry, _ := s.cachedEntries.get(outpoint)
+				if entry == nil {
+					continue
+				}
+				if entry.IsSpent() {
+					s.cachedEntries.delete(outpoint)
+					s.totalEntryMemory -= entry.memoryUsage()
+				} else {
+					entry.packedFlags &^= tfModified | tfFresh
+				}
+			}
+		}
+		s.dirtyOutpoints = nil
 		s.lastFlushHash = bestState.Hash
 		s.lastFlushTime = time.Now()
 	}, nil
@@ -495,39 +540,32 @@ func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) (func(), 
 // The optional returned callback must run only after a successful commit.
 // This function and the callback require the chain state lock (for writes).
 func (s *utxoCache) flush(dbTx database.Tx, mode FlushMode, bestState *BestState) (func(), error) {
-	var threshold uint64
+	full := s.totalMemoryUsage() >= s.maxTotalMemoryUsage
 	switch mode {
 	case FlushRequired:
-		threshold = 0
+		full = true
 
 	case FlushIfNeeded:
-		// If we performed a flush in the current best state, we have nothing to do.
-		if bestState.Hash == s.lastFlushHash {
+		if !full && (bestState.Hash == s.lastFlushHash || time.Since(s.lastFlushTime) < UtxoSyncInterval) {
 			return nil, nil
 		}
 
-		threshold = s.maxTotalMemoryUsage
-
 	case FlushPeriodic:
-		// If the time since the last flush is over the periodic interval,
-		// force a flush.  Otherwise just flush when the cache is full.
-		if time.Since(s.lastFlushTime) > UtxoFlushPeriodicInterval {
-			threshold = 0
-		} else {
-			threshold = s.maxTotalMemoryUsage
+		if !full && time.Since(s.lastFlushTime) < UtxoFlushPeriodicInterval {
+			return nil, nil
 		}
+	case FlushSync:
+		// Required persistence, for example before pruning recovery data.
 	}
 
-	if s.totalMemoryUsage() >= threshold {
-		// Add one to round up the integer division.
-		totalMiB := s.totalMemoryUsage() / ((1024 * 1024) + 1)
-		log.Infof("Flushing UTXO cache of %d MiB with %d entries to disk. For large sizes, "+
-			"this can take up to several minutes...", totalMiB, s.cachedEntries.length())
-
-		return s.writeCache(dbTx, bestState)
+	action := "Syncing"
+	if full {
+		action = "Flushing"
 	}
-
-	return nil, nil
+	totalMiB := (s.totalMemoryUsage() + (1 << 20) - 1) >> 20
+	log.Infof("%s UTXO cache of %d MiB with %d entries (%d dirty outpoints) to disk...",
+		action, totalMiB, s.cachedEntries.length(), len(s.dirtyOutpoints))
+	return s.writeCache(dbTx, bestState, !full)
 }
 
 // flushToDB owns the transaction for flushes which need no other database

@@ -563,13 +563,13 @@ func TestUtxoCacheFlush(t *testing.T) {
 	// Arbitrarily set the last flush time to 6 minutes ago.
 	cache.lastFlushTime = time.Now().Add(-time.Minute * 6)
 
-	// Attempt to flush with flush periodic.  Should flush now.
+	// Periodic synchronization persists the dirty entries and retains them warm.
 	err = cache.flushToDB(FlushPeriodic, chain.stateSnapshot)
 	if err != nil {
 		t.Fatalf("unexpected error while flushing cache: %v", err)
 	}
-	if cache.cachedEntries.length() != 0 {
-		t.Fatalf("Expected 0 entries, has %d instead", cache.cachedEntries.length())
+	if cache.cachedEntries.length() != len(outPoints1) {
+		t.Fatalf("Expected %d retained entries, has %d instead", len(outPoints1), cache.cachedEntries.length())
 	}
 
 	err = assertConsistencyState(chain, tip.Hash())

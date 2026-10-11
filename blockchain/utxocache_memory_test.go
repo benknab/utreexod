@@ -33,7 +33,7 @@ func TestUtxoCacheChurnBudget(t *testing.T) {
 	require.Zero(t, s.totalEntryMemory)
 	require.Greater(t, s.totalMemoryUsage(), before, "deletions must not hide map growth and tombstones")
 	s.cachedEntries.clear()
-	require.Zero(t, s.totalMemoryUsage())
+	require.Zero(t, s.cachedEntries.size())
 	require.Nil(t, s.cachedEntries.entries, "full flush must release backing tables")
 }
 

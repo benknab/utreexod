@@ -712,7 +712,7 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 				}
 
 				if flushNeeded {
-					utxoFlushCommitted, err = b.utxoCache.flush(dbTx, FlushRequired, state)
+					utxoFlushCommitted, err = b.utxoCache.flush(dbTx, FlushSync, state)
 					if err != nil {
 						return err
 					}
