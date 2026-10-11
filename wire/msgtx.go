@@ -5,11 +5,12 @@
 package wire
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"hash"
 	"io"
 	"strconv"
+	"sync"
 
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
 )
@@ -330,16 +331,38 @@ func (msg *MsgTx) AddTxOut(to *TxOut) {
 	msg.TxOut = append(msg.TxOut, to)
 }
 
+type txHasher struct {
+	digest hash.Hash
+	sum    [sha256.Size]byte
+}
+
+var txHasherPool = sync.Pool{New: func() interface{} {
+	return &txHasher{digest: sha256.New()}
+}}
+
+// transactionHash streams either serialization into reusable digest storage.
+// Only the returned value escapes the pool; no serialized transaction buffer
+// or digest-result slice is retained by the caller.
+func (msg *MsgTx) transactionHash(witness bool) chainhash.Hash {
+	h := txHasherPool.Get().(*txHasher)
+	defer txHasherPool.Put(h)
+	h.digest.Reset()
+	if witness {
+		_ = msg.Serialize(h.digest)
+	} else {
+		_ = msg.SerializeNoWitness(h.digest)
+	}
+	h.digest.Sum(h.sum[:0])
+	return chainhash.Hash(sha256.Sum256(h.sum[:]))
+}
+
 // TxHash generates the Hash for the transaction.
 func (msg *MsgTx) TxHash() chainhash.Hash {
 	// Encode the transaction and calculate double sha256 on the result.
 	// Ignore the error returns since the only way the encode could fail
 	// is being out of memory or due to nil pointers, both of which would
 	// cause a run-time panic.
-	txHash := sha256.New()
-	_ = msg.SerializeNoWitness(txHash)
-	bytes := chainhash.DoubleHashRaw(txHash)
-	return *((*[32]byte)(bytes))
+	return msg.transactionHash(false)
 }
 
 // WitnessHash generates the hash of the transaction serialized according to
@@ -349,9 +372,7 @@ func (msg *MsgTx) TxHash() chainhash.Hash {
 // is the same as its txid.
 func (msg *MsgTx) WitnessHash() chainhash.Hash {
 	if msg.HasWitness() {
-		buf := bytes.NewBuffer(make([]byte, 0, msg.SerializeSize()))
-		_ = msg.Serialize(buf)
-		return chainhash.DoubleHashH(buf.Bytes())
+		return msg.transactionHash(true)
 	}
 
 	return msg.TxHash()
@@ -729,7 +750,7 @@ func (msg *MsgTx) BtcEncode(w io.Writer, pver uint32, enc MessageEncoding) error
 		// bytes specific to the witness encoding. This byte sequence is known
 		// as a flag. The first byte is a marker byte (TxFlagMarker) and the
 		// second one is the flag value to indicate presence of witness data.
-		if _, err := w.Write([]byte{TxFlagMarker, WitnessFlag}); err != nil {
+		if err := bs.PutUint16(w, littleEndian, uint16(TxFlagMarker)|uint16(WitnessFlag)<<8); err != nil {
 			return err
 		}
 	}
