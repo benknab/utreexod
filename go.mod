@@ -1,5 +1,8 @@
 module github.com/utreexo/utreexod
 
+// Memory and journal fixes from the fork's dev branch.
+replace github.com/utreexo/utreexo => github.com/benknab/utreexo v0.0.0-20261011090152-fb080713c023
+
 require (
 	github.com/aead/siphash v1.0.1
 	github.com/btcsuite/btcd v0.24.0
