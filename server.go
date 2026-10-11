@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/decred/dcrd/lru"
 	"github.com/utreexo/utreexo"
 	"github.com/utreexo/utreexod/addrmgr"
 	"github.com/utreexo/utreexod/bdkwallet"
@@ -32,7 +33,6 @@ import (
 	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/connmgr"
-	"github.com/decred/dcrd/lru"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/electrum"
 	"github.com/utreexo/utreexod/mempool"
@@ -257,6 +257,7 @@ type server struct {
 	cfIndex               *indexers.CfIndex
 	utreexoProofIndex     *indexers.UtreexoProofIndex
 	flatUtreexoProofIndex *indexers.FlatUtreexoProofIndex
+	backgroundProofIndex  *indexers.BackgroundProofIndex
 
 	// The fee estimator keeps track of how long transactions are left in
 	// the mempool before they are mined into blocks.
@@ -1305,7 +1306,7 @@ func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *wire.MsgGetUtreexoPro
 		}
 	}
 	if sp.server.flatUtreexoProofIndex != nil {
-		udata, err = sp.server.flatUtreexoProofIndex.FetchUtreexoProof(height)
+		udata, err = sp.server.flatUtreexoProofIndex.FetchUtreexoProofForHash(&msg.BlockHash)
 		if err != nil {
 			chanLog.Debugf("Unable to fetch utreexo proof for block hash %v: %v",
 				msg.BlockHash, err)
@@ -2342,7 +2343,10 @@ func (s *server) relayUtreexoTxInv(sp *serverPeer, msg relayMsg) {
 			positions := s.utreexoProofIndex.GetLeafHashPositions(leafHashes)
 			packedPositions = chainhash.Uint64sToPackedHashes(positions)
 		} else {
-			positions := s.flatUtreexoProofIndex.GetLeafHashPositions(leafHashes)
+			positions, err := s.flatUtreexoProofIndex.GetLeafHashPositions(leafHashes)
+			if err != nil {
+				return
+			}
 			packedPositions = chainhash.Uint64sToPackedHashes(positions)
 		}
 	default:
@@ -2655,6 +2659,10 @@ func disconnectPeer(peerList map[int32]*serverPeer, compareFunc func(*serverPeer
 
 // newPeerConfig returns the configuration for the given serverPeer.
 func newPeerConfig(sp *serverPeer) *peer.Config {
+	services := sp.server.services
+	if idx := sp.server.backgroundProofIndex; idx != nil && idx.Snapshot().Synced {
+		services |= wire.SFNodeUtreexo | wire.SFNodeUtreexoArchive
+	}
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
 			OnVersion:         sp.OnVersion,
@@ -2700,7 +2708,7 @@ func newPeerConfig(sp *serverPeer) *peer.Config {
 		UserAgentVersion:  userAgentVersion,
 		UserAgentComments: cfg.UserAgentComments,
 		ChainParams:       sp.server.chainParams,
-		Services:          sp.server.services,
+		Services:          services,
 		DisableRelayTx:    cfg.BlocksOnly,
 		ProtocolVersion:   peer.MaxProtocolVersion,
 		TrickleInterval:   cfg.TrickleInterval,
@@ -3121,6 +3129,9 @@ func (s *server) Start() {
 
 	// Server startup time. Used for the uptime command for uptime calculation.
 	s.startupTime = time.Now().Unix()
+	if s.backgroundProofIndex != nil {
+		s.backgroundProofIndex.Start()
+	}
 
 	// Start the peer handler which in turn starts the address and block
 	// managers.
@@ -3412,7 +3423,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 	if !cfg.V2Transport {
 		services &^= wire.SFNodeP2PV2
 	}
-	if !cfg.NoUtreexo || cfg.UtreexoProofIndex || cfg.FlatUtreexoProofIndex {
+	if !cfg.BackgroundProofIndex && (!cfg.NoUtreexo || cfg.UtreexoProofIndex || cfg.FlatUtreexoProofIndex) {
 		services |= wire.SFNodeUtreexo
 
 		if cfg.Prune == 0 {
@@ -3519,7 +3530,16 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		if err != nil {
 			return nil, err
 		}
-		indexes = append(indexes, s.flatUtreexoProofIndex)
+		if cfg.BackgroundProofIndex {
+			s.backgroundProofIndex, err = indexers.NewBackgroundProofIndex(db,
+				s.flatUtreexoProofIndex, cfg.ProofIndexDelay, cfg.ProofIndexPaused)
+			if err != nil {
+				return nil, err
+			}
+			indexes = append(indexes, s.backgroundProofIndex)
+		} else {
+			indexes = append(indexes, s.flatUtreexoProofIndex)
+		}
 	}
 
 	// Create an index manager if any of the optional indexes are enabled.
@@ -3875,6 +3895,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 			CfIndex:               s.cfIndex,
 			UtreexoProofIndex:     s.utreexoProofIndex,
 			FlatUtreexoProofIndex: s.flatUtreexoProofIndex,
+			BackgroundProofIndex:  s.backgroundProofIndex,
 			FeeEstimator:          s.feeEstimator,
 			WatchOnlyWallet:       s.watchOnlyWallet,
 			BDKWallet:             s.bdkWallet,

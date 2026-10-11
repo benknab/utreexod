@@ -68,6 +68,22 @@ func (ps *ProofStats) UpdateUDStats(excludeAccProof bool, ud *wire.UData) {
 	ps.BlockProofOverheadSum += overhead
 }
 
+// undoBlock removes the additive statistics for a disconnected block.
+func (ps *ProofStats) undoBlock(ud *wire.UData, parentHeight uint64) {
+	var delta ProofStats
+	delta.UpdateUDStats(false, ud)
+	ps.BlockHeight = parentHeight
+	ps.BlockProofOverheadSum -= delta.BlockProofOverheadSum
+	ps.BlockProofCount -= delta.BlockProofCount
+	ps.TotalDels -= uint64(len(ud.LeafDatas))
+	ps.LdSize -= delta.LdSize
+	ps.LdCount -= delta.LdCount
+	ps.TgSize -= delta.TgSize
+	ps.TgCount -= delta.TgCount
+	ps.ProofSize -= delta.ProofSize
+	ps.ProofCount -= delta.ProofCount
+}
+
 // LogProofStats outputs a log of the proof statistics.
 func (ps *ProofStats) LogProofStats() {
 	log.Infof("height %d: totalDels %d, ldSize %d, ldCount %d, tgSize %d, tgCount %d, proofSize %d, proofCount %d",

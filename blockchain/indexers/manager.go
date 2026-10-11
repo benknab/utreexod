@@ -165,6 +165,7 @@ func dbIndexDisconnectBlock(dbTx database.Tx, indexer Indexer, block *btcutil.Bl
 // plugged into normal chain processing.
 type Manager struct {
 	db             database.DB
+	allIndexes     []Indexer // includes independently scheduled indexes
 	enabledIndexes []Indexer
 }
 
@@ -185,7 +186,7 @@ func indexDropKey(idxKey []byte) []byte {
 // because dropping and index has to be done in several atomic steps rather than
 // one big atomic step due to the massive number of entries.
 func (m *Manager) maybeFinishDrops(interrupt <-chan struct{}) error {
-	indexNeedsDrop := make([]bool, len(m.enabledIndexes))
+	indexNeedsDrop := make([]bool, len(m.allIndexes))
 	err := m.db.View(func(dbTx database.Tx) error {
 		// None of the indexes needs to be dropped if the index tips
 		// bucket hasn't been created yet.
@@ -196,7 +197,7 @@ func (m *Manager) maybeFinishDrops(interrupt <-chan struct{}) error {
 
 		// Mark the indexer as requiring a drop if one is already in
 		// progress.
-		for i, indexer := range m.enabledIndexes {
+		for i, indexer := range m.allIndexes {
 			dropKey := indexDropKey(indexer.Key())
 			if indexesBucket.Get(dropKey) != nil {
 				indexNeedsDrop[i] = true
@@ -215,7 +216,7 @@ func (m *Manager) maybeFinishDrops(interrupt <-chan struct{}) error {
 
 	// Finish dropping any of the enabled indexes that are already in the
 	// middle of being dropped.
-	for i, indexer := range m.enabledIndexes {
+	for i, indexer := range m.allIndexes {
 		if !indexNeedsDrop[i] {
 			continue
 		}
@@ -234,7 +235,7 @@ func (m *Manager) maybeFinishDrops(interrupt <-chan struct{}) error {
 // been created and creates them if not.
 func (m *Manager) maybeCreateIndexes(dbTx database.Tx) error {
 	indexesBucket := dbTx.Metadata().Bucket(indexTipsBucketName)
-	for _, indexer := range m.enabledIndexes {
+	for _, indexer := range m.allIndexes {
 		// Nothing to do if the index tip already exists.
 		idxKey := indexer.Key()
 		if indexesBucket.Get(idxKey) != nil {
@@ -276,7 +277,7 @@ func (m *Manager) maybeCreateIndexes(dbTx database.Tx) error {
 // This is part of the blockchain.IndexManager interface.
 func (m *Manager) Init(chain *blockchain.BlockChain, interrupt <-chan struct{}) error {
 	// Nothing to do when no indexes are enabled.
-	if len(m.enabledIndexes) == 0 {
+	if len(m.allIndexes) == 0 {
 		return nil
 	}
 
@@ -310,12 +311,18 @@ func (m *Manager) Init(chain *blockchain.BlockChain, interrupt <-chan struct{}) 
 	}
 
 	// Initialize each of the enabled indexes.
-	for _, indexer := range m.enabledIndexes {
+	for _, indexer := range m.allIndexes {
 		// Fetch the current tip for the index.
 		var height int32
 		var hash *chainhash.Hash
 		err := m.db.View(func(dbTx database.Tx) error {
 			idxKey := indexer.Key()
+			if _, synchronous := indexer.(*FlatUtreexoProofIndex); synchronous {
+				bucket := dbTx.Metadata().Bucket(idxKey)
+				if bucket != nil && len(bucket.Get(proofReplayKey)) != 0 {
+					return fmt.Errorf("interrupted background proof writes require recovery with --backgroundproofindex before synchronous indexing")
+				}
+			}
 			hash, height, err = dbFetchIndexerTip(dbTx, idxKey)
 			return err
 		})
@@ -490,6 +497,12 @@ func (m *Manager) Init(chain *blockchain.BlockChain, interrupt <-chan struct{}) 
 		}
 	}()
 	for _, indexer := range m.enabledIndexes {
+		// The flat record pipeline can persist later-block leaf counts and
+		// roots against earlier heights. Use the synchronous per-block path
+		// for catch-up as well, including a return from background indexing.
+		if _, flat := indexer.(*FlatUtreexoProofIndex); flat {
+			continue
+		}
 		if pp, ok := indexer.(ProofPipeliner); ok {
 			if err := pp.StartProofPipeline(); err != nil {
 				return err
@@ -845,9 +858,16 @@ func (m *Manager) Flush(bestHash *chainhash.Hash, mode blockchain.FlushMode, onC
 // The manager returned satisfies the blockchain.IndexManager interface and thus
 // cleanly plugs into the normal blockchain processing path.
 func NewManager(db database.DB, enabledIndexes []Indexer) *Manager {
+	foreground := make([]Indexer, 0, len(enabledIndexes))
+	for _, index := range enabledIndexes {
+		if _, background := index.(*BackgroundProofIndex); !background {
+			foreground = append(foreground, index)
+		}
+	}
 	return &Manager{
 		db:             db,
-		enabledIndexes: enabledIndexes,
+		allIndexes:     enabledIndexes,
+		enabledIndexes: foreground,
 	}
 }
 

@@ -197,19 +197,22 @@ type config struct {
 	BlockPrioritySize uint32   `long:"blockprioritysize" description:"Size in bytes for high-priority/low-fee transactions when creating a block"`
 
 	// Indexing options.
-	AddrIndex                  bool  `long:"addrindex" description:"Maintain a full address-based transaction index which makes the searchrawtransactions RPC available"`
-	TxIndex                    bool  `long:"txindex" description:"Maintain a full hash-based transaction index which makes all transactions available via the getrawtransaction RPC"`
-	V2Transport                bool  `long:"v2transport" description:"Enable P2P v2 encrypted transport protocol (BIP324) (default: false)"`
-	UtreexoProofIndex          bool  `long:"utreexoproofindex" description:"Maintain a utreexo proof for all blocks"`
-	FlatUtreexoProofIndex      bool  `long:"flatutreexoproofindex" description:"Maintain a utreexo proof for all blocks in flat files"`
-	UtreexoProofIndexMaxMemory int64 `long:"utreexoproofindexmaxmemory" description:"The maxmimum memory in mebibytes (MiB) that the utreexo proof indexes will use up. Default of 500MiB. Minimum of 250MiB"`
-	CFilters                   bool  `long:"cfilters" description:"Enable committed filtering (CF) support"`
-	NoPeerBloomFilters         bool  `long:"nopeerbloomfilters" description:"Disable bloom filtering support"`
-	DropAddrIndex              bool  `long:"dropaddrindex" description:"Deletes the address-based transaction index from the database on start up and then exits."`
-	DropCfIndex                bool  `long:"dropcfindex" description:"Deletes the index used for committed filtering (CF) support from the database on start up and then exits."`
-	DropTxIndex                bool  `long:"droptxindex" description:"Deletes the hash-based transaction index from the database on start up and then exits."`
-	DropUtreexoProofIndex      bool  `long:"droputreexoproofindex" description:"Deletes the utreexo proof index from the database on start up and then exits."`
-	DropFlatUtreexoProofIndex  bool  `long:"dropflatutreexoproofindex" description:"Deletes the flat utreexo proof index from the database on start up and then exits."`
+	AddrIndex                  bool          `long:"addrindex" description:"Maintain a full address-based transaction index which makes the searchrawtransactions RPC available"`
+	TxIndex                    bool          `long:"txindex" description:"Maintain a full hash-based transaction index which makes all transactions available via the getrawtransaction RPC"`
+	V2Transport                bool          `long:"v2transport" description:"Enable P2P v2 encrypted transport protocol (BIP324) (default: false)"`
+	UtreexoProofIndex          bool          `long:"utreexoproofindex" description:"Maintain a utreexo proof for all blocks"`
+	FlatUtreexoProofIndex      bool          `long:"flatutreexoproofindex" description:"Maintain a utreexo proof for all blocks in flat files"`
+	BackgroundProofIndex       bool          `long:"backgroundproofindex" description:"Generate archival flat proofs independently of block validation (requires flatutreexoproofindex and prune=0)"`
+	ProofIndexPaused           bool          `long:"proofindexpaused" description:"Start the background proof index paused; resume with setproofindexpaused false"`
+	ProofIndexDelay            time.Duration `long:"proofindexdelay" description:"Minimum delay between background proof blocks, e.g. 100ms (default 0s)"`
+	UtreexoProofIndexMaxMemory int64         `long:"utreexoproofindexmaxmemory" description:"The maxmimum memory in mebibytes (MiB) that the utreexo proof indexes will use up. Default of 500MiB. Minimum of 250MiB"`
+	CFilters                   bool          `long:"cfilters" description:"Enable committed filtering (CF) support"`
+	NoPeerBloomFilters         bool          `long:"nopeerbloomfilters" description:"Disable bloom filtering support"`
+	DropAddrIndex              bool          `long:"dropaddrindex" description:"Deletes the address-based transaction index from the database on start up and then exits."`
+	DropCfIndex                bool          `long:"dropcfindex" description:"Deletes the index used for committed filtering (CF) support from the database on start up and then exits."`
+	DropTxIndex                bool          `long:"droptxindex" description:"Deletes the hash-based transaction index from the database on start up and then exits."`
+	DropUtreexoProofIndex      bool          `long:"droputreexoproofindex" description:"Deletes the utreexo proof index from the database on start up and then exits."`
+	DropFlatUtreexoProofIndex  bool          `long:"dropflatutreexoproofindex" description:"Deletes the flat utreexo proof index from the database on start up and then exits."`
 
 	// Wallet options.
 	WatchOnlyWallet                                      bool     `long:"watchonlywallet" description:"Enable the watch only wallet with utreexo proofs. Must have --noutreexo disabled"`
@@ -988,6 +991,12 @@ func loadConfig() (*config, []string, error) {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr, usageMessage)
 		return nil, nil, err
+	}
+	if cfg.BackgroundProofIndex && (!cfg.FlatUtreexoProofIndex || cfg.UtreexoProofIndex || cfg.Prune != 0) {
+		return nil, nil, fmt.Errorf("--backgroundproofindex requires --flatutreexoproofindex, --prune=0 and no --utreexoproofindex")
+	}
+	if cfg.ProofIndexDelay < 0 || (!cfg.BackgroundProofIndex && (cfg.ProofIndexPaused || cfg.ProofIndexDelay != 0)) {
+		return nil, nil, fmt.Errorf("proof index pause/delay controls require --backgroundproofindex and a nonnegative delay")
 	}
 
 	// Check mining addresses are valid and saved parsed versions.

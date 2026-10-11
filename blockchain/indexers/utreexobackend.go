@@ -93,6 +93,25 @@ func (idx *UtreexoProofIndex) FetchUtreexoState(dbTx database.Tx, blockHash *cha
 
 // FetchUtreexoState returns the utreexo state at the desired block.
 func (idx *FlatUtreexoProofIndex) FetchUtreexoState(blockHeight int32) ([]*chainhash.Hash, uint64, error) {
+	unlock, err := idx.proofReadLock(blockHeight, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer unlock()
+	return idx.fetchUtreexoState(blockHeight)
+}
+
+// FetchUtreexoStateForHash binds a historical state to its block identity.
+func (idx *FlatUtreexoProofIndex) FetchUtreexoStateForHash(hash *chainhash.Hash) ([]*chainhash.Hash, uint64, error) {
+	height, unlock, err := idx.proofBlockReadLock(hash, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer unlock()
+	return idx.fetchUtreexoState(height)
+}
+
+func (idx *FlatUtreexoProofIndex) fetchUtreexoState(blockHeight int32) ([]*chainhash.Hash, uint64, error) {
 	stump, err := idx.fetchRoots(blockHeight)
 	if err != nil {
 		return nil, 0, err
@@ -178,6 +197,9 @@ func (idx *UtreexoProofIndex) CloseUtreexoState() error {
 // On block connects, we always want to flush first but on disconnects, we want to flush first before the
 // data necessary undo data is removed.
 func (idx *FlatUtreexoProofIndex) Flush(bestHash *chainhash.Hash, mode blockchain.FlushMode, onConnect bool) error {
+	if idx.background != nil {
+		return nil // the worker checkpoints its own tip
+	}
 	switch mode {
 	case blockchain.FlushPeriodic:
 		// If the time since the last flush less then the interval, just return.
@@ -252,6 +274,9 @@ func (idx *FlatUtreexoProofIndex) flushUtreexoState(bestHash *chainhash.Hash) er
 
 // CloseUtreexoState flushes and closes the utreexo database state.
 func (idx *FlatUtreexoProofIndex) CloseUtreexoState() error {
+	if idx.background != nil {
+		return idx.background.Stop()
+	}
 	bestHash := idx.chain.BestSnapshot().Hash
 	return idx.utreexoState.state.Close(bestHash)
 }
@@ -341,15 +366,8 @@ func (us *UtreexoState) initConsistentUtreexoState(chain *blockchain.BlockChain,
 
 	currentHeight := int32(-1)
 	if savedHash != nil {
-		// Even though this should always be true, make sure the fetched hash is in
-		// the best chain.
-		if !chain.MainChainHasBlock(savedHash) {
-			return fmt.Errorf("last utreexo consistency status contains "+
-				"hash that is not in best chain: %v", savedHash)
-		}
-
 		var err error
-		currentHeight, err = chain.BlockHeightByHash(savedHash)
+		currentHeight, err = chain.KnownBlockHeight(savedHash)
 		if err != nil {
 			return err
 		}
@@ -360,6 +378,10 @@ func (us *UtreexoState) initConsistentUtreexoState(chain *blockchain.BlockChain,
 				"recoverable and should be dropped and reindexed",
 				currentHeight, tipHeight)
 		}
+		ancestor, err := chain.BlockHashByHeightOnBranch(tipHash, currentHeight)
+		if err != nil || !savedHash.IsEqual(ancestor) {
+			return fmt.Errorf("saved utreexo hash %v is not an ancestor of index tip %v", savedHash, tipHash)
+		}
 	} else {
 		// Mark it as an empty hash for logging below.
 		savedHash = new(chainhash.Hash)
@@ -369,13 +391,13 @@ func (us *UtreexoState) initConsistentUtreexoState(chain *blockchain.BlockChain,
 		"consistent at block %s (%d) but the index tip is at block %s (%d),  This may "+
 		"take a long time...", savedHash.String(), currentHeight, tipHash.String(), tipHeight)
 
-	for h := currentHeight + 1; h <= tipHeight; h++ {
-		block, err := chain.BlockByHeight(h)
+	for h := max(currentHeight+1, 1); h <= tipHeight; h++ {
+		block, err := chain.BlockByHeightOnBranch(tipHash, h)
 		if err != nil {
 			return err
 		}
 
-		stxos, err := chain.FetchSpendJournal(block)
+		stxos, err := chain.FetchSpendJournalForBlock(block)
 		if err != nil {
 			return err
 		}
@@ -434,7 +456,21 @@ func (us *UtreexoState) initConsistentUtreexoState(chain *blockchain.BlockChain,
 // existing state on disk, it creates one and returns it.
 func InitUtreexoState(cfg *UtreexoConfig, chain *blockchain.BlockChain, ttlIdx *FlatFileState,
 	tipHash *chainhash.Hash, tipHeight int32) (*UtreexoState, error) {
+	uState, savedHash, err := openUtreexoState(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := uState.initConsistentUtreexoState(chain, ttlIdx, savedHash, tipHash, tipHeight); err != nil {
+		uState.state.CloseWithoutFlush()
+		return nil, err
+	}
+	return uState, nil
+}
 
+// openUtreexoState opens the WAL checkpoint without replaying to the index tip.
+// Background indexing uses its durable replay intent to reconcile flat files
+// before choosing which branch to resume.
+func openUtreexoState(cfg *UtreexoConfig) (*UtreexoState, *chainhash.Hash, error) {
 	basePath := utreexoBasePath(cfg)
 	log.Infof("Initializing Utreexo state from '%s'", basePath)
 	defer log.Info("Utreexo state loaded")
@@ -448,8 +484,14 @@ func InitUtreexoState(cfg *UtreexoConfig, chain *blockchain.BlockChain, ttlIdx *
 		utreexo.ExpectedMaxLeaves(presizeLeaves),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	opened := false
+	defer func() {
+		if !opened {
+			forest.CloseWithoutFlush()
+		}
+	}()
 
 	// A forest left in record mode comes from a run that was cut off
 	// during the proof pipeline's catch-up. The recovered state may hold
@@ -461,10 +503,10 @@ func InitUtreexoState(cfg *UtreexoConfig, chain *blockchain.BlockChain, ttlIdx *
 		log.Infof("The utreexo forest was left in record mode, " +
 			"catching up the parent hashes with a rehash pass...")
 		if _, _, _, err := forest.RehashAndProve(nil); err != nil {
-			return nil, fmt.Errorf("RehashAndProve: %w", err)
+			return nil, nil, fmt.Errorf("RehashAndProve: %w", err)
 		}
 		if err := forest.ExitRecordMode(); err != nil {
-			return nil, fmt.Errorf("ExitRecordMode: %w", err)
+			return nil, nil, fmt.Errorf("ExitRecordMode: %w", err)
 		}
 	}
 
@@ -476,16 +518,14 @@ func InitUtreexoState(cfg *UtreexoConfig, chain *blockchain.BlockChain, ttlIdx *
 	// Read the saved consistency hash from metaFile (written atomically by WAL).
 	var savedHash *chainhash.Hash
 	consistencyHash, err := forest.ReadConsistencyHash()
-	if err == nil && consistencyHash != [32]byte{} {
+	if err != nil {
+		return nil, nil, err
+	}
+	if consistencyHash != [32]byte{} {
 		h := chainhash.Hash(consistencyHash)
 		savedHash = &h
 	}
 
-	// Make sure that the utreexo state is consistent before returning it.
-	err = uState.initConsistentUtreexoState(chain, ttlIdx, savedHash, tipHash, tipHeight)
-	if err != nil {
-		return nil, err
-	}
-
-	return uState, err
+	opened = true
+	return uState, savedHash, nil
 }

@@ -100,6 +100,7 @@ var _ NeedsInputser = (*FlatUtreexoProofIndex)(nil)
 // FlatUtreexoProofIndex implements a utreexo accumulator proof index for all the blocks.
 // In a flat file.
 type FlatUtreexoProofIndex struct {
+	background      *BackgroundProofIndex
 	targetState     FlatFileState
 	proofState      FlatFileState
 	leafDataState   FlatFileState
@@ -334,7 +335,9 @@ func (idx *FlatUtreexoProofIndex) initTTLState(height int32) (*utreexo.Pollard, 
 func (idx *FlatUtreexoProofIndex) Init(chain *blockchain.BlockChain,
 	tipHash *chainhash.Hash, tipHeight int32) error {
 
-	idx.chain = chain
+	if idx.background == nil {
+		idx.chain = chain
+	}
 
 	// Init Utreexo State.
 	uState, err := InitUtreexoState(idx.config, chain, &idx.ttlState, tipHash, tipHeight)
@@ -346,6 +349,10 @@ func (idx *FlatUtreexoProofIndex) Init(chain *blockchain.BlockChain,
 
 	err = idx.consistentFlatFileState(tipHeight)
 	if err != nil {
+		return err
+	}
+	idx.pStats = ProofStats{}
+	if err := idx.pStats.InitPStats(&idx.proofStatsState); err != nil {
 		return err
 	}
 
@@ -458,9 +465,8 @@ func (idx *FlatUtreexoProofIndex) Name() string {
 // Key returns the database key to use for the index as a byte slice. This is
 // part of the Indexer interface.
 //
-// NOTE This key is NEVER used as we store everything in flat files
-// for flat utreexo proof index.  It is just here to abide by the
-// indexer interface.
+// Proof payloads live in flat files. The key identifies the index tip and
+// background replay metadata in the main database.
 func (idx *FlatUtreexoProofIndex) Key() []byte {
 	return flatUtreexoBucketKey
 }
@@ -1115,7 +1121,7 @@ func (idx *FlatUtreexoProofIndex) getUndoData(block *btcutil.Block) (
 
 	if !idx.config.Pruned {
 		var err error
-		ud, err = idx.FetchUtreexoProof(block.Height())
+		ud, err = idx.fetchUtreexoProof(block.Height())
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
@@ -1287,6 +1293,26 @@ func (idx *FlatUtreexoProofIndex) PruneBlock(_ database.Tx, _ *chainhash.Hash, l
 // FetchUtreexoProof returns the Utreexo proof data for the given block height.
 func (idx *FlatUtreexoProofIndex) FetchUtreexoProof(height int32) (
 	*wire.UData, error) {
+	unlock, err := idx.proofReadLock(height, false)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return idx.fetchHistoricalProof(height)
+}
+
+// FetchUtreexoProofForHash rejects a request for the other fork's proof even
+// when the two blocks have the same height.
+func (idx *FlatUtreexoProofIndex) FetchUtreexoProofForHash(hash *chainhash.Hash) (*wire.UData, error) {
+	height, unlock, err := idx.proofBlockReadLock(hash, false)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return idx.fetchHistoricalProof(height)
+}
+
+func (idx *FlatUtreexoProofIndex) fetchHistoricalProof(height int32) (*wire.UData, error) {
 
 	if height == 0 {
 		return &wire.UData{}, nil
@@ -1376,22 +1402,35 @@ func (idx *FlatUtreexoProofIndex) fetchProofHashes(height int32) ([]utreexo.Hash
 }
 
 // GetLeafHashPositions returns the positions of the passed in hashes.
-func (idx *FlatUtreexoProofIndex) GetLeafHashPositions(delHashes []utreexo.Hash) []uint64 {
+func (idx *FlatUtreexoProofIndex) GetLeafHashPositions(delHashes []utreexo.Hash) ([]uint64, error) {
+	unlock, err := idx.proofReadLock(0, true)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	idx.mtx.RLock()
 	defer idx.mtx.RUnlock()
 
 	positions := make([]uint64, len(delHashes))
 	for i, delHash := range delHashes {
-		pos, _ := idx.utreexoState.state.GetLeafPosition(delHash)
+		pos, found := idx.utreexoState.state.GetLeafPosition(delHash)
+		if !found {
+			return nil, fmt.Errorf("leaf %x is not in the proof index", delHash)
+		}
 		positions[i] = pos
 	}
 
-	return positions
+	return positions, nil
 }
 
 // GenerateUDataPartial generates a utreexo data based on the current state of the accumulator.
 // It leaves out the full proof hashes and only fetches the requested positions.
 func (idx *FlatUtreexoProofIndex) GenerateUDataPartial(dels []wire.LeafData, positions []uint64) (*wire.UData, error) {
+	unlock, err := idx.proofReadLock(0, true)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	idx.mtx.RLock()
 	defer idx.mtx.RUnlock()
 
@@ -1444,6 +1483,14 @@ func (idx *FlatUtreexoProofIndex) getPollard(version uint32) *utreexo.Pollard {
 // FetchTTLs fetches the ttls as a MsgUtreexoTTLs from the given data.
 func (idx *FlatUtreexoProofIndex) FetchTTLs(version, startHeight uint32, exponent uint8) (
 	wire.MsgUtreexoTTLs, error) {
+	if version == 0 || version > uint32(1<<31) {
+		return wire.MsgUtreexoTTLs{}, ErrProofIndexNotReady
+	}
+	unlock, err := idx.proofReadLock(int32(version-1), false)
+	if err != nil {
+		return wire.MsgUtreexoTTLs{}, err
+	}
+	defer unlock()
 
 	p := idx.getPollard(version)
 	if p == nil {
@@ -1709,6 +1756,11 @@ func (idx *FlatUtreexoProofIndex) fetchRoots(height int32) (utreexo.Stump, error
 // should either be of block height of where the deletions are happening or just
 // the lastest block height for mempool tx proof generation.
 func (idx *FlatUtreexoProofIndex) GenerateUData(dels []wire.LeafData) (*wire.UData, error) {
+	unlock, err := idx.proofReadLock(0, true)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	idx.mtx.RLock()
 	ud, err := wire.GenerateUData(dels, idx.utreexoState.state)
 	idx.mtx.RUnlock()
@@ -1729,6 +1781,15 @@ func (idx *FlatUtreexoProofIndex) GenerateUData(dels []wire.LeafData) (*wire.UDa
 // This function is safe for concurrent access.
 func (idx *FlatUtreexoProofIndex) ProveUtxos(utxos []*blockchain.UtxoEntry,
 	outpoints *[]wire.OutPoint) (*blockchain.ChainTipProof, error) {
+	unlock, err := idx.proofReadLock(0, true)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	provedAtHash := idx.chain.BestSnapshot().Hash
+	if idx.background != nil {
+		provedAtHash = idx.background.progress.Load().Tip.Hash
+	}
 
 	// We'll turn the entries and outpoints into leaves that go in
 	// the accumulator.
@@ -1740,7 +1801,7 @@ func (idx *FlatUtreexoProofIndex) ProveUtxos(utxos []*blockchain.UtxoEntry,
 			return nil, err
 		}
 
-		blockHash, err := idx.chain.BlockHashByHeight(utxo.BlockHeight())
+		blockHash, err := idx.chain.BlockHashByHeightOnBranch(&provedAtHash, utxo.BlockHeight())
 		if err != nil {
 			return nil, err
 		}
@@ -1778,10 +1839,6 @@ func (idx *FlatUtreexoProofIndex) ProveUtxos(utxos []*blockchain.UtxoEntry,
 		return nil, err
 	}
 
-	// Grab the height and the blockhash the proof was generated at.
-	snapshot := idx.chain.BestSnapshot()
-	provedAtHash := snapshot.Hash
-
 	proof := &blockchain.ChainTipProof{
 		ProvedAtHash: &provedAtHash,
 		AccProof:     &accProof,
@@ -1795,6 +1852,11 @@ func (idx *FlatUtreexoProofIndex) ProveUtxos(utxos []*blockchain.UtxoEntry,
 // verification failed.
 func (idx *FlatUtreexoProofIndex) VerifyAccProof(toProve []utreexo.Hash,
 	proof *utreexo.Proof) error {
+	unlock, err := idx.proofReadLock(0, true)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return idx.utreexoState.state.Verify(toProve, *proof, false)
 }
 
@@ -1847,12 +1909,13 @@ func (idx *FlatUtreexoProofIndex) updateBlockTTLState(height int32) error {
 }
 
 func (idx *FlatUtreexoProofIndex) fetchBlockSummary(blockHash *chainhash.Hash) (*wire.UtreexoBlockSummary, error) {
-	height, err := idx.chain.BlockHeightByHash(blockHash)
+	height, unlock, err := idx.proofBlockReadLock(blockHash, false)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
 
-	ud, err := idx.FetchUtreexoProof(height)
+	ud, err := idx.fetchHistoricalProof(height)
 	if err != nil {
 		return nil, err
 	}
@@ -1879,6 +1942,11 @@ func (idx *FlatUtreexoProofIndex) fetchBlockSummary(blockHash *chainhash.Hash) (
 
 // FetchTTLRoots returns the roots of the ttl summary state.
 func (idx *FlatUtreexoProofIndex) FetchTTLRoots() (utreexo.Stump, error) {
+	unlock, err := idx.proofReadLock(0, true)
+	if err != nil {
+		return utreexo.Stump{}, err
+	}
+	defer unlock()
 	p, err := idx.initTTLState(idx.ttlState.BestHeight())
 	if err != nil {
 		return utreexo.Stump{}, err
@@ -1892,10 +1960,11 @@ func (idx *FlatUtreexoProofIndex) FetchTTLRoots() (utreexo.Stump, error) {
 
 // FetchMsgUtreexoRoot returns a complete utreexoroot bitcoin message on the requested block.
 func (idx *FlatUtreexoProofIndex) FetchMsgUtreexoRoot(blockHash *chainhash.Hash) (*wire.MsgUtreexoRoot, error) {
-	height, err := idx.chain.BlockHeightByHash(blockHash)
+	height, unlock, err := idx.proofBlockReadLock(blockHash, true)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
 
 	stump, err := idx.fetchRoots(height)
 	if err != nil {

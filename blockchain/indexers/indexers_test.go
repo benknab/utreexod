@@ -1630,9 +1630,9 @@ func TestCatchupPreservesUtreexoConsistencyHash(t *testing.T) {
 	// interrupt branch fires and calls Flush with the genesis blockhash,
 	// which is not the utreexo indexer's tip.
 	interrupt := make(chan struct{})
-	mgr.enabledIndexes = append(mgr.enabledIndexes,
+	mgr = NewManager(mgr.db, append(indexes,
 		&cfIndexClosingInterrupt{CfIndex: NewCfIndex(mgr.db, params), interrupt: interrupt},
-	)
+	))
 	require.Equal(t, errInterruptRequested, mgr.Init(chain, interrupt))
 
 	forEachUtreexoState(func(us *UtreexoState) {

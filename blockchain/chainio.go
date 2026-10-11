@@ -291,6 +291,14 @@ func (b *BlockChain) FetchSpendJournal(targetBlock *btcutil.Block) ([]SpentTxOut
 //
 // This function is NOT safe for concurrent access.
 func (b *BlockChain) FetchSpendJournalUnsafe(targetBlock *btcutil.Block) ([]SpentTxOut, error) {
+	return b.FetchSpendJournalForBlock(targetBlock)
+}
+
+// FetchSpendJournalForBlock reads the immutable spend journal keyed by a
+// caller-owned block, including disconnected blocks. It holds a database
+// snapshot but no chain lock. It is safe for concurrent access; callers must
+// retain the block and journal (background indexes require archival mode).
+func (b *BlockChain) FetchSpendJournalForBlock(targetBlock *btcutil.Block) ([]SpentTxOut, error) {
 	var spendEntries []SpentTxOut
 	err := b.db.View(func(dbTx database.Tx) error {
 		var err error

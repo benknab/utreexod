@@ -16,6 +16,18 @@ import (
 
 // helpDescsEnUS defines the English descriptions used for the help strings.
 var helpDescsEnUS = map[string]string{
+	"getproofindexinfo--synopsis":          "Returns background proof-index progress independently of block validation.",
+	"setproofindexpaused--synopsis":        "Pauses or resumes the background proof index at the next block boundary and returns its status. The setting lasts until restart.",
+	"setproofindexpaused-paused":           "True to request a pause, false to resume",
+	"proofindexinforesult-height":          "Last fully proof-indexed height (-1 before genesis)",
+	"proofindexinforesult-bestblockhash":   "Hash of the proof-index tip",
+	"proofindexinforesult-validatedheight": "Current conventional validation height",
+	"proofindexinforesult-synced":          "Whether the proof tip matches the validated chain tip",
+	"proofindexinforesult-paused":          "Whether a pause is requested",
+	"proofindexinforesult-initializing":    "Whether saved proof state is being recovered",
+	"proofindexinforesult-processing":      "Whether a proof block is currently being connected or disconnected",
+	"proofindexinforesult-stopped":         "Whether the worker has stopped",
+	"proofindexinforesult-error":           "Last worker error, if any; validation remains available",
 	// DebugLevelCmd help.
 	"debuglevel--synopsis": "Dynamically changes the debug logging level.\n" +
 		"The levelspec can either a debug level or of the form:\n" +
@@ -919,6 +931,8 @@ var helpDescsEnUS = map[string]string{
 // This information is used to generate the help.  Each result type must be a
 // pointer to the type (or nil to indicate no return value).
 var rpcResultTypes = map[string][]interface{}{
+	"getproofindexinfo":                  {(*btcjson.ProofIndexInfoResult)(nil)},
+	"setproofindexpaused":                {(*btcjson.ProofIndexInfoResult)(nil)},
 	"addnode":                            nil,
 	"balance":                            {(*btcjson.BalanceResult)(nil)},
 	"createrawtransaction":               {(*string)(nil)},

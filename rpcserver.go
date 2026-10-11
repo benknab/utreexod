@@ -177,6 +177,7 @@ var rpcHandlersBeforeInit = map[string]commandHandler{
 	"getnetworkhashps":                   handleGetNetworkHashPS,
 	"getnodeaddresses":                   handleGetNodeAddresses,
 	"getpeerinfo":                        handleGetPeerInfo,
+	"getproofindexinfo":                  handleGetProofIndexInfo,
 	"getrawmempool":                      handleGetRawMempool,
 	"getrawtransaction":                  handleGetRawTransaction,
 	"gettxout":                           handleGetTxOut,
@@ -199,6 +200,7 @@ var rpcHandlersBeforeInit = map[string]commandHandler{
 	"searchrawtransactions":              handleSearchRawTransactions,
 	"sendrawtransaction":                 handleSendRawTransaction,
 	"setgenerate":                        handleSetGenerate,
+	"setproofindexpaused":                handleSetProofIndexPaused,
 	"signmessagewithprivkey":             handleSignMessageWithPrivKey,
 	"stop":                               handleStop,
 	"submitblock":                        handleSubmitBlock,
@@ -272,6 +274,7 @@ var rpcUnimplemented = map[string]struct{}{
 
 // Commands that are available to a limited user
 var rpcLimited = map[string]struct{}{
+	"getproofindexinfo": {},
 	// Websockets commands
 	"loadtxfilter":          {},
 	"notifyblocks":          {},
@@ -3370,7 +3373,7 @@ func handleGetUtreexoProof(s *rpcServer, cmd interface{}, closeChan <-chan struc
 			}
 		}
 	} else {
-		udata, err = s.cfg.FlatUtreexoProofIndex.FetchUtreexoProof(height)
+		udata, err = s.cfg.FlatUtreexoProofIndex.FetchUtreexoProofForHash(blockHash)
 		if err != nil {
 			return nil, &btcjson.RPCError{
 				Code: btcjson.ErrRPCMisc,
@@ -3494,16 +3497,7 @@ func handleGetUtreexoRoots(s *rpcServer, cmd interface{}, closeChan <-chan struc
 		}
 		getReply.NumLeaves = numLeaves
 	} else {
-		height, err := s.cfg.Chain.BlockHeightByHash(blockHash)
-		if err != nil {
-			return nil, &btcjson.RPCError{
-				Code: btcjson.ErrRPCMisc,
-				Message: fmt.Sprintf("Couldn't fetch the block height for blockhash %s from "+
-					"the blockindex. Error: %v", c.BlockHash, err),
-			}
-		}
-
-		roots, numLeaves, err := s.cfg.FlatUtreexoProofIndex.FetchUtreexoState(height)
+		roots, numLeaves, err := s.cfg.FlatUtreexoProofIndex.FetchUtreexoStateForHash(blockHash)
 		if err != nil {
 			return nil, &btcjson.RPCError{
 				Code: btcjson.ErrRPCMisc,
@@ -5782,6 +5776,7 @@ type rpcserverConfig struct {
 	CfIndex               *indexers.CfIndex
 	UtreexoProofIndex     *indexers.UtreexoProofIndex
 	FlatUtreexoProofIndex *indexers.FlatUtreexoProofIndex
+	BackgroundProofIndex  *indexers.BackgroundProofIndex
 
 	// The fee estimator keeps track of how long transactions are left in
 	// the mempool before they are mined into blocks.

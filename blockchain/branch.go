@@ -40,6 +40,16 @@ func (b *BlockChain) branchNodes(hash *chainhash.Hash) (branchNodes, error) {
 	return branchNodes{tip: node, best: b.bestChain}, nil
 }
 
+// KnownBlockHeight returns the height of a known block header, including a
+// disconnected block. It does not imply that the block is currently valid.
+func (b *BlockChain) KnownBlockHeight(hash *chainhash.Hash) (int32, error) {
+	branch, err := b.branchNodes(hash)
+	if err != nil {
+		return 0, err
+	}
+	return branch.tip.height, nil
+}
+
 // BlockHashByHeightOnBranch returns an ancestor of the supplied block, even
 // if that block has since been disconnected. The result does not change when
 // the best chain changes. This function is safe for concurrent access.
