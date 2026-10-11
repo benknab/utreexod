@@ -57,6 +57,9 @@ type FlatFileState struct {
 	// NOTE Since we account for the genesis block in the offsets, to fetch data for
 	// height x, you'd do 'offsets[x]' and not 'offsets[x-1]'.
 	offsets []int64
+
+	// Scratch for one locked TTL batch. Entries never survive the batch.
+	overwriteRecords map[int32]flatFileRecord
 }
 
 // recoverOffsetFile recovers the offset file to the latest readable offset.
@@ -305,9 +308,23 @@ func (ff *FlatFileState) OverWrite(height, offset int32, data []byte) error {
 // many records in a row can hold the lock once across the batch instead of
 // reacquiring it for every record.
 func (ff *FlatFileState) overwriteLocked(height, offset int32, data []byte) error {
+	record, err := ff.recordLocked(height)
+	if err != nil {
+		return err
+	}
+	return ff.overwriteRecordLocked(height, record, offset, data)
+}
+
+// flatFileRecord is valid only while the owning flat file's lock is held.
+type flatFileRecord struct {
+	offset int64
+	size   int64
+}
+
+func (ff *FlatFileState) recordLocked(height int32) (flatFileRecord, error) {
 	// If the height requsted is greater than the best height, return an error.
 	if height > ff.currentHeight || height <= 0 {
-		return fmt.Errorf("Best height is %v, can't overwrite at height %v",
+		return flatFileRecord{}, fmt.Errorf("Best height is %v, can't overwrite at height %v",
 			ff.currentHeight, height)
 	}
 
@@ -316,29 +333,33 @@ func (ff *FlatFileState) overwriteLocked(height, offset int32, data []byte) erro
 	// Only the first stored record can start at byte zero. Reject a zero
 	// offset for later heights so a corrupt lookup cannot overwrite it.
 	if fOffset < 0 || (height > 1 && fOffset == 0) {
-		return fmt.Errorf("cannot overwrite height %d: invalid record offset %d", height, fOffset)
+		return flatFileRecord{}, fmt.Errorf("cannot overwrite height %d: invalid record offset %d", height, fOffset)
 	}
 	// Validate the destination's framing before using its declared payload
 	// size to bound the write.
-	header := make([]byte, 8)
-	_, err := ff.dataFile.ReadAt(header, fOffset)
+	var header [8]byte
+	_, err := ff.dataFile.ReadAt(header[:], fOffset)
 	if err != nil {
-		return err
+		return flatFileRecord{}, err
 	}
 	if !bytes.Equal(header[:4], magicBytes[:]) {
-		return fmt.Errorf("cannot overwrite height %d: read wrong magic of %x",
-			height, header[:4])
+		return flatFileRecord{}, fmt.Errorf("cannot overwrite height %d: read wrong magic of %08x",
+			height, binary.BigEndian.Uint32(header[:4]))
 	}
+	return flatFileRecord{offset: fOffset + 8, size: int64(binary.BigEndian.Uint32(header[4:]))}, nil
+}
+
+func (ff *FlatFileState) overwriteRecordLocked(height int32, record flatFileRecord, offset int32, data []byte) error {
 	// Keep the entire write inside the payload; an unchecked TTL offset could
 	// otherwise overwrite this record's header or the following record.
-	recordSize := int64(binary.BigEndian.Uint32(header[4:]))
+	recordSize := record.size
 	if offset < 0 || int64(offset)+int64(len(data)) > recordSize {
 		return fmt.Errorf("overwrite outside height %d record: offset %d, size %d, record size %d",
 			height, offset, len(data), recordSize)
 	}
-	writeOffset := fOffset + 8 + int64(offset)
+	writeOffset := record.offset + int64(offset)
 
-	_, err = ff.dataFile.WriteAt(data, writeOffset)
+	_, err := ff.dataFile.WriteAt(data, writeOffset)
 	return err
 }
 

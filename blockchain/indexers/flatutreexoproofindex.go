@@ -1602,6 +1602,20 @@ func writeTTLs(curHeight int32, createdIndexes []int32, lds []wire.LeafData,
 	// Take the lock once for all writes instead of per-write.
 	ttlIdx.mtx.Lock()
 	defer ttlIdx.mtx.Unlock()
+	// Many inputs were created in the same block. Validate each source record
+	// once under this lock, while retaining bounds checks for every TTL write.
+	if ttlIdx.overwriteRecords == nil {
+		ttlIdx.overwriteRecords = make(map[int32]flatFileRecord)
+	}
+	records := ttlIdx.overwriteRecords
+	defer func() {
+		// Bound retained scratch after unusually large blocks.
+		if len(records) > 8192 {
+			ttlIdx.overwriteRecords = nil
+		} else {
+			clear(records)
+		}
+	}()
 
 	for i, ld := range lds {
 		byteOrder.PutUint32(buf[:uint32Size], uint32(curHeight))
@@ -1610,7 +1624,16 @@ func writeTTLs(curHeight int32, createdIndexes []int32, lds []wire.LeafData,
 		cIndex := createdIndexes[i]
 		offset := cIndex * ttlSize
 
-		err := ttlIdx.overwriteLocked(ld.Height, offset, buf[:])
+		record, ok := records[ld.Height]
+		if !ok {
+			var err error
+			record, err = ttlIdx.recordLocked(ld.Height)
+			if err != nil {
+				return err
+			}
+			records[ld.Height] = record
+		}
+		err := ttlIdx.overwriteRecordLocked(ld.Height, record, offset, buf[:])
 		if err != nil {
 			return err
 		}
