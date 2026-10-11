@@ -444,8 +444,10 @@ func (s *utxoCache) connectTransactions(block *btcutil.Block, stxos *[]SpentTxOu
 	return nil
 }
 
-// writeCache writes all the entries that are cached in memory to the database atomically.
-func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) error {
+// writeCache stages cached entries in the database transaction. Its returned
+// callback must run only after the transaction commits successfully, while the
+// chain lock is still held. A rollback must leave the cache available for retry.
+func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) (func(), error) {
 	// Update commits and flushes the cache to the database.
 	// NOTE: The database has its own cache which gets atomically written
 	// to leveldb.
@@ -456,7 +458,7 @@ func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) error {
 		if entry == nil || entry.IsSpent() {
 			err := dbDeleteUtxoEntry(utxoBucket, outpoint)
 			if err != nil {
-				return err
+				return nil, err
 			}
 
 			continue
@@ -470,30 +472,29 @@ func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState) error {
 		// Entry is fresh and needs to be put into the database.
 		err := dbPutUtxoEntry(utxoBucket, outpoint, entry)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// When done, store the best state hash in the database to indicate the state
 	// is consistent until that hash.
 	err := dbPutUtxoStateConsistency(dbTx, &bestState.Hash)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	s.cachedEntries.clear()
-	s.totalEntryMemory = 0
-
-	// The best state is the new last flush hash.
-	s.lastFlushHash = bestState.Hash
-	s.lastFlushTime = time.Now()
-
-	return nil
+	return func() {
+		s.cachedEntries.clear()
+		s.totalEntryMemory = 0
+		s.lastFlushHash = bestState.Hash
+		s.lastFlushTime = time.Now()
+	}, nil
 }
 
 // flush flushes the UTXO state to the database if a flush is needed with the given flush mode.
 //
-// This function MUST be called with the chain state lock held (for writes).
-func (s *utxoCache) flush(dbTx database.Tx, mode FlushMode, bestState *BestState) error {
+// The optional returned callback must run only after a successful commit.
+// This function and the callback require the chain state lock (for writes).
+func (s *utxoCache) flush(dbTx database.Tx, mode FlushMode, bestState *BestState) (func(), error) {
 	var threshold uint64
 	switch mode {
 	case FlushRequired:
@@ -502,7 +503,7 @@ func (s *utxoCache) flush(dbTx database.Tx, mode FlushMode, bestState *BestState
 	case FlushIfNeeded:
 		// If we performed a flush in the current best state, we have nothing to do.
 		if bestState.Hash == s.lastFlushHash {
-			return nil
+			return nil, nil
 		}
 
 		threshold = s.maxTotalMemoryUsage
@@ -526,6 +527,24 @@ func (s *utxoCache) flush(dbTx database.Tx, mode FlushMode, bestState *BestState
 		return s.writeCache(dbTx, bestState)
 	}
 
+	return nil, nil
+}
+
+// flushToDB owns the transaction for flushes which need no other database
+// updates. The caller must hold the chain lock throughout commit and cleanup.
+func (s *utxoCache) flushToDB(mode FlushMode, bestState *BestState) error {
+	var committed func()
+	err := s.db.Update(func(tx database.Tx) error {
+		var err error
+		committed, err = s.flush(tx, mode, bestState)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if committed != nil {
+		committed()
+	}
 	return nil
 }
 
@@ -537,9 +556,7 @@ func (b *BlockChain) FlushUtxoCache(mode FlushMode) error {
 	b.chainLock.Lock()
 	defer b.chainLock.Unlock()
 
-	return b.db.Update(func(dbTx database.Tx) error {
-		return b.utxoCache.flush(dbTx, mode, b.BestSnapshot())
-	})
+	return b.utxoCache.flushToDB(mode, b.BestSnapshot())
 }
 
 // InitConsistentState checks the consistency status of the utxo state and
@@ -639,9 +656,7 @@ func (b *BlockChain) InitConsistentState(tip *blockNode, interrupt <-chan struct
 
 		// Flush the utxo cache if needed.  This will in turn update the
 		// consistent state to this block.
-		err = s.db.Update(func(dbTx database.Tx) error {
-			return s.flush(dbTx, FlushIfNeeded, &BestState{Hash: node.hash, Height: node.height})
-		})
+		err = s.flushToDB(FlushIfNeeded, &BestState{Hash: node.hash, Height: node.height})
 		if err != nil {
 			return err
 		}

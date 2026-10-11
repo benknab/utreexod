@@ -457,9 +457,7 @@ func TestUtxoCacheFlush(t *testing.T) {
 	}
 
 	// Flush.
-	err = chain.db.Update(func(dbTx database.Tx) error {
-		return cache.flush(dbTx, FlushRequired, chain.stateSnapshot)
-	})
+	err = cache.flushToDB(FlushRequired, chain.stateSnapshot)
 	if err != nil {
 		t.Fatalf("unexpected error while flushing cache: %v", err)
 	}
@@ -518,9 +516,7 @@ func TestUtxoCacheFlush(t *testing.T) {
 	}
 
 	// Flush.
-	err = chain.db.Update(func(dbTx database.Tx) error {
-		return cache.flush(dbTx, FlushRequired, chain.stateSnapshot)
-	})
+	err = cache.flushToDB(FlushRequired, chain.stateSnapshot)
 	if err != nil {
 		t.Fatalf("unexpected error while flushing cache: %v", err)
 	}
@@ -555,9 +551,7 @@ func TestUtxoCacheFlush(t *testing.T) {
 	}
 
 	// Attempt to flush with flush periodic.  Shouldn't flush.
-	err = chain.db.Update(func(dbTx database.Tx) error {
-		return cache.flush(dbTx, FlushPeriodic, chain.stateSnapshot)
-	})
+	err = cache.flushToDB(FlushPeriodic, chain.stateSnapshot)
 	if err != nil {
 		t.Fatalf("unexpected error while flushing cache: %v", err)
 	}
@@ -570,9 +564,7 @@ func TestUtxoCacheFlush(t *testing.T) {
 	cache.lastFlushTime = time.Now().Add(-time.Minute * 6)
 
 	// Attempt to flush with flush periodic.  Should flush now.
-	err = chain.db.Update(func(dbTx database.Tx) error {
-		return cache.flush(dbTx, FlushPeriodic, chain.stateSnapshot)
-	})
+	err = cache.flushToDB(FlushPeriodic, chain.stateSnapshot)
 	if err != nil {
 		t.Fatalf("unexpected error while flushing cache: %v", err)
 	}

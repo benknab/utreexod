@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/wire"
 )
 
@@ -45,9 +44,7 @@ func TestUtxoCacheRepeatedFetchMemory(t *testing.T) {
 	op := outpointFromInt(1)
 	out := &wire.TxOut{Value: 1, PkScript: getValidP2PKHScript()}
 	require.NoError(t, s.addTxOut(op, out, false, 1))
-	require.NoError(t, chain.db.Update(func(tx database.Tx) error {
-		return s.flush(tx, FlushRequired, chain.stateSnapshot)
-	}))
+	require.NoError(t, s.flushToDB(FlushRequired, chain.stateSnapshot))
 	entries, err := s.fetchEntries([]wire.OutPoint{op, op, op})
 	require.NoError(t, err)
 	require.Same(t, entries[0], entries[1])

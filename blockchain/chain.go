@@ -679,15 +679,14 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 	// directly to the database on disk.  In order for the database to be
 	// consistent, we must flush the cache before writing the viewpoint.
 	if view != nil && b.utreexoView == nil {
-		err = b.db.Update(func(dbTx database.Tx) error {
-			return b.utxoCache.flush(dbTx, FlushRequired, state)
-		})
+		err = b.utxoCache.flushToDB(FlushRequired, state)
 		if err != nil {
 			return err
 		}
 	}
 
 	// Atomically insert info into the database.
+	var utxoFlushCommitted func()
 	connect := func(dbTx database.Tx) error {
 		if b.pruneTarget != 0 {
 			// NODE_NETWORK_LIMITED service bit requires that the last 288 blocks.
@@ -713,7 +712,7 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 				}
 
 				if flushNeeded {
-					err = b.utxoCache.flush(dbTx, FlushRequired, state)
+					utxoFlushCommitted, err = b.utxoCache.flush(dbTx, FlushRequired, state)
 					if err != nil {
 						return err
 					}
@@ -788,6 +787,9 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 	if err != nil {
 		return err
 	}
+	if utxoFlushCommitted != nil {
+		utxoFlushCommitted()
+	}
 
 	// Prune fully spent entries and mark all entries in the view unmodified
 	// now that the modifications have been committed to the database.
@@ -832,9 +834,7 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 	if b.utreexoView == nil {
 		// Since we may have changed the UTXO cache, we make sure it didn't exceed its
 		// maximum size.  If we're pruned and have flushed already, this will be a no-op.
-		return b.db.Update(func(dbTx database.Tx) error {
-			return b.utxoCache.flush(dbTx, FlushIfNeeded, b.BestSnapshot())
-		})
+		return b.utxoCache.flushToDB(FlushIfNeeded, b.BestSnapshot())
 	}
 	return nil
 }
@@ -880,6 +880,7 @@ func (b *BlockChain) disconnectBlock(node *blockNode, block *btcutil.Block, view
 	state := newBestState(prevNode, blockSize, blockWeight, numTxns,
 		newTotalTxns, prevNode.CalcPastMedianTime())
 
+	var utxoFlushCommitted func()
 	err = b.db.Update(func(dbTx database.Tx) error {
 		// Update best block state.
 		err := dbPutBestState(dbTx, state, node.workSum)
@@ -899,7 +900,7 @@ func (b *BlockChain) disconnectBlock(node *blockNode, block *btcutil.Block, view
 			// reorganization modifies the database directly, the cache
 			// will be left in an inconsistent state if we don't flush it
 			// prior to the dbPutUtxoView that happends below.
-			err = b.utxoCache.flush(dbTx, FlushRequired, state)
+			utxoFlushCommitted, err = b.utxoCache.flush(dbTx, FlushRequired, state)
 			if err != nil {
 				return err
 			}
@@ -947,6 +948,9 @@ func (b *BlockChain) disconnectBlock(node *blockNode, block *btcutil.Block, view
 
 	// Prune fully spent entries and mark all entries in the view unmodified
 	// now that the modifications have been committed to the database.
+	if utxoFlushCommitted != nil {
+		utxoFlushCommitted()
+	}
 	view.commit()
 
 	// This node's parent is now the end of the best chain.
