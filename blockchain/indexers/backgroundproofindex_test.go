@@ -2,6 +2,8 @@ package indexers
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -27,10 +29,18 @@ type proofWorkerFixture struct {
 }
 
 func newProofWorkerFixture(t *testing.T) *proofWorkerFixture {
-	f := &proofWorkerFixture{t: t, path: t.TempDir(), params: chaincfg.RegressionNetParams}
+	return proofWorkerFixtureAt(t, t.TempDir(), true)
+}
+
+func proofWorkerFixtureAt(t *testing.T, path string, create bool) *proofWorkerFixture {
+	f := &proofWorkerFixture{t: t, path: path, params: chaincfg.RegressionNetParams}
 	f.params.CoinbaseMaturity = 1
 	var err error
-	f.db, err = database.Create("ffldb", filepath.Join(f.path, "blocks"), wire.MainNet)
+	if create {
+		f.db, err = database.Create("ffldb", filepath.Join(f.path, "blocks"), wire.MainNet)
+	} else {
+		f.db, err = database.Open("ffldb", filepath.Join(f.path, "blocks"), wire.MainNet)
+	}
 	require.NoError(t, err)
 	f.openWorker()
 	f.chain, err = blockchain.New(&blockchain.Config{
@@ -344,4 +354,97 @@ func TestBackgroundProofSynchronousResume(t *testing.T) {
 	idx.background = nil
 	require.NoError(t, NewManager(f.db, []Indexer{idx}).Init(f.chain, nil))
 	f.compare()
+}
+
+// Unlike closing handles without a forest flush, process exit also discards
+// FFldb's cache and bypasses all file cleanup. The replay intent must preserve
+// its source branch and repairs using only the actual durable checkpoints.
+func TestBackgroundProofAbruptProcessExit(t *testing.T) {
+	const crashCode = 23
+	if stage := os.Getenv("UTREEXOD_PROOF_CRASH_STAGE"); stage != "" {
+		f := proofWorkerFixtureAt(t, os.Getenv("UTREEXOD_PROOF_CRASH_PATH"), true)
+		tip := btcutil.NewBlock(f.params.GenesisBlock)
+		var outs []*blockchain.SpendableOut
+		var fork *btcutil.Block
+		var forkOuts []*blockchain.SpendableOut
+		for i := 0; i < 5; i++ {
+			tip, outs = f.add(tip, outs)
+			if i == 0 {
+				fork, forkOuts = tip, outs
+			}
+		}
+		require.NoError(t, f.chain.FlushUtxoCache(blockchain.FlushRequired))
+		if stage == "first-connect" {
+			require.NoError(t, f.worker.recover())
+			b := f.worker
+			require.NoError(t, b.prepare(&proofReplayIntent{From: b.tip, To: proofTip{Hash: *tip.Hash(), Height: tip.Height()}}))
+			for h := int32(0); h < 3; h++ {
+				block, err := f.chain.BlockByHeight(h)
+				require.NoError(t, err)
+				stxos, err := f.chain.FetchSpendJournalForBlock(block)
+				require.NoError(t, err)
+				require.NoError(t, b.ConnectBlock(nil, block, stxos))
+			}
+		} else {
+			f.waitSynced()
+			f.closeWorker()
+			f.openWorker()
+			require.NoError(t, f.worker.recover())
+			b := f.worker
+			switch stage {
+			case "partial-connect", "connect-reorg":
+				next, _ := f.add(tip, outs)
+				require.NoError(t, f.chain.FlushUtxoCache(blockchain.FlushRequired))
+				require.NoError(t, b.prepare(&proofReplayIntent{From: b.tip, To: proofTip{Hash: *next.Hash(), Height: next.Height()}}))
+				stxos, err := f.chain.FetchSpendJournalForBlock(next)
+				require.NoError(t, err)
+				require.NoError(t, b.ConnectBlock(nil, next, stxos))
+				if stage == "partial-connect" {
+					require.NoError(t, b.leafDataState.DisconnectBlock(next.Height()))
+					_, err = b.leafDataState.dataFile.WriteAt([]byte{0xaa, 0xff}, b.leafDataState.currentOffset)
+					require.NoError(t, err)
+				} else {
+					// Persist a different validated branch while both the
+					// forest checkpoint and replay intent describe the old one.
+					for i := 0; i < 6; i++ {
+						fork, forkOuts = f.add(fork, forkOuts)
+					}
+					require.NoError(t, f.chain.FlushUtxoCache(blockchain.FlushRequired))
+					require.NoError(t, f.db.Flush())
+				}
+			case "undo-before-wal", "undo-after-wal":
+				require.NoError(t, b.prepare(&proofReplayIntent{From: b.tip, To: proofTip{
+					Hash: tip.MsgBlock().Header.PrevBlock, Height: tip.Height() - 1}, Disconnect: true}))
+				if stage == "undo-before-wal" {
+					adds, proof, dels, ud, err := b.getUndoData(tip)
+					require.NoError(t, err)
+					indexes, err := b.getCreateIndexes(tip.Hash(), ud.LeafDatas, dels)
+					require.NoError(t, err)
+					require.NoError(t, b.resetTTLs(ud, indexes))
+					roots, err := b.fetchRoots(tip.Height() - 1)
+					require.NoError(t, err)
+					require.NoError(t, b.utreexoState.state.Undo(adds, *proof, dels, roots.Roots))
+				} else {
+					require.NoError(t, b.DisconnectBlock(nil, tip, nil))
+				}
+			default:
+				t.Fatalf("unknown crash stage %q", stage)
+			}
+		}
+		os.Exit(crashCode)
+	}
+	for _, stage := range []string{"first-connect", "partial-connect", "connect-reorg", "undo-before-wal", "undo-after-wal"} {
+		t.Run(stage, func(t *testing.T) {
+			path := t.TempDir()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestBackgroundProofAbruptProcessExit$")
+			cmd.Env = append(os.Environ(), "UTREEXOD_PROOF_CRASH_STAGE="+stage, "UTREEXOD_PROOF_CRASH_PATH="+path)
+			output, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit, "%s", output)
+			require.Equal(t, crashCode, exit.ExitCode(), "%s", output)
+			f := proofWorkerFixtureAt(t, path, false)
+			f.waitSynced()
+			f.compare()
+		})
+	}
 }
