@@ -679,6 +679,12 @@ func BlockToDelLeaves(stxos []SpentTxOut, chain *BlockChain, block *btcutil.Bloc
 				IsCoinBase:            stxo.IsCoinBase,
 			}
 
+			if delLeaves == nil {
+				// The spend journal bounds the result, including same-block
+				// inputs skipped above. Allocate lazily to keep an all-skipped
+				// block's result nil and avoid repeated growth/copies.
+				delLeaves = make([]wire.LeafData, 0, len(stxos))
+			}
 			delLeaves = append(delLeaves, leaf)
 			blockInIdx++
 		}
