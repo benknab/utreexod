@@ -165,8 +165,13 @@ func DeserializeUtxoData(r io.Reader) ([]LeafData, error) {
 // leaf data is compact as you can't generate the correct hash.
 func HashesFromLeafDatas(leafDatas []LeafData) ([]utreexo.Hash, error) {
 	// make slice of hashes from leafdata
-	delHashes := make([]utreexo.Hash, 0, len(leafDatas))
-	for _, ld := range leafDatas {
+	delHashes := make([]utreexo.Hash, len(leafDatas))
+	if len(leafDatas) == 0 {
+		return delHashes, nil
+	}
+	hasher := NewLeafHasher()
+	for i := range leafDatas {
+		ld := &leafDatas[i]
 		// We can't calculate the correct hash if the leaf data is in
 		// the compact state.
 		if ld.IsCompact() {
@@ -174,7 +179,7 @@ func HashesFromLeafDatas(leafDatas []LeafData) ([]utreexo.Hash, error) {
 				"to generate a leafhash")
 		}
 
-		delHashes = append(delHashes, ld.LeafHash())
+		delHashes[i] = hasher.HashLeaf(ld)
 	}
 
 	return delHashes, nil

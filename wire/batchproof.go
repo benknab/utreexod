@@ -89,8 +89,8 @@ func ProofHashesSerialize(w io.Writer, hashes []utreexo.Hash) error {
 	}
 
 	// then the rest is just hashes
-	for _, h := range hashes {
-		_, err = w.Write(h[:])
+	for i := range hashes {
+		_, err = w.Write(hashes[i][:])
 		if err != nil {
 			return err
 		}

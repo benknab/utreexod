@@ -516,9 +516,10 @@ func (idx *FlatUtreexoProofIndex) ConnectBlock(dbTx database.Tx, block *btcutil.
 		return err
 	}
 
-	delHashes := make([]utreexo.Hash, 0, len(ud.LeafDatas))
-	for _, ld := range ud.LeafDatas {
-		delHashes = append(delHashes, ld.LeafHash())
+	hasher := wire.NewLeafHasher()
+	delHashes := make([]utreexo.Hash, len(ud.LeafDatas))
+	for i := range ud.LeafDatas {
+		delHashes[i] = hasher.HashLeaf(&ud.LeafDatas[i])
 	}
 	// For pruned nodes, we need to save the undo block in order to undo
 	// a block on reorgs. If we have all the proofs block by block, that
@@ -536,9 +537,9 @@ func (idx *FlatUtreexoProofIndex) ConnectBlock(dbTx database.Tx, block *btcutil.
 		}
 	}
 
-	addHashes := make([]utreexo.Leaf, 0, len(adds))
-	for _, add := range adds {
-		addHashes = append(addHashes, utreexo.Leaf{Hash: add.LeafHash(), Remember: false})
+	addHashes := make([]utreexo.Leaf, len(adds))
+	for i := range adds {
+		addHashes[i] = utreexo.Leaf{Hash: hasher.HashLeaf(&adds[i]), Remember: false}
 	}
 
 	idx.mtx.Lock()

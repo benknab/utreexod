@@ -170,6 +170,7 @@ func (l *LeafData) LeafHash() [32]byte {
 type LeafHasher struct {
 	digest hash.Hash
 	buf    [8]byte // scratch for uint32/uint64 encoding
+	sum    [32]byte
 }
 
 // NewLeafHasher creates a LeafHasher with its own SHA-512/256 state.
@@ -205,7 +206,8 @@ func (lh *LeafHasher) HashLeaf(l *LeafData) [32]byte {
 	lh.writeVarInt(d, uint64(len(l.PkScript)))
 	d.Write(l.PkScript)
 
-	return *(*[32]byte)(d.Sum(nil))
+	d.Sum(lh.sum[:0])
+	return lh.sum
 }
 
 // writeVarInt writes a Bitcoin-style variable-length integer directly to w.
