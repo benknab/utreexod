@@ -19,20 +19,21 @@ import (
 )
 
 type proofWorkerFixture struct {
-	t       *testing.T
+	t       testing.TB
 	db      database.DB
 	path    string
 	params  chaincfg.Params
 	chain   *blockchain.BlockChain
 	worker  *BackgroundProofIndex
 	running bool
+	closed  bool
 }
 
 func newProofWorkerFixture(t *testing.T) *proofWorkerFixture {
 	return proofWorkerFixtureAt(t, t.TempDir(), true)
 }
 
-func proofWorkerFixtureAt(t *testing.T, path string, create bool) *proofWorkerFixture {
+func proofWorkerFixtureAt(t testing.TB, path string, create bool) *proofWorkerFixture {
 	f := &proofWorkerFixture{t: t, path: path, params: chaincfg.RegressionNetParams}
 	f.params.CoinbaseMaturity = 1
 	var err error
@@ -57,6 +58,7 @@ func proofWorkerFixtureAt(t *testing.T, path string, create bool) *proofWorkerFi
 }
 
 func (f *proofWorkerFixture) openWorker() {
+	f.closed = false
 	idx, err := NewFlatUtreexoProofIndex(false, &f.params, 1<<20,
 		filepath.Join(f.path, "proofs"), f.db.Flush)
 	require.NoError(f.t, err)
@@ -68,6 +70,10 @@ func (f *proofWorkerFixture) openWorker() {
 }
 
 func (f *proofWorkerFixture) closeWorker() {
+	if f.closed {
+		return
+	}
+	f.closed = true
 	if f.running {
 		require.NoError(f.t, f.worker.Stop())
 		f.running = false

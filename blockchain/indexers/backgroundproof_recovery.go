@@ -186,42 +186,52 @@ func (b *BackgroundProofIndex) repairTTLs(block *btcutil.Block, restore bool) er
 	if err != nil {
 		return err
 	}
-	var retained []wire.LeafData
+	retained := lds[:0]
 	for _, ld := range lds {
 		if ld.Height <= b.tip.Height {
 			retained = append(retained, ld)
 		}
 	}
-	// Creation indexes can be recovered from immutable source blocks, even
-	// if the last leaf-data/proof record was never completely written.
+	// Decode and hash each immutable creation block once. Keep only one
+	// creation block's commitments at a time, then apply repairs in the
+	// original deletion order so restore indexes retain their meaning.
+	byHeight := make(map[int32][]int)
 	for i := range retained {
-		ld := retained[i]
-		creation, err := b.chain.BlockByHeightOnBranch(block.Hash(), ld.Height)
+		byHeight[retained[i].Height] = append(byHeight[retained[i].Height], i)
+	}
+	indexes := make([]int32, len(retained))
+	hasher := wire.NewLeafHasher()
+	for height, inputs := range byHeight {
+		creation, err := b.chain.BlockByHeightOnBranch(block.Hash(), height)
 		if err != nil {
 			return err
 		}
 		_, count, _, skip := blockchain.DedupeBlock(creation)
-		adds := blockchain.BlockToAddLeaves(creation, skip, count)
-		found := false
-		for index, add := range adds {
-			if add.LeafHash() != ld.LeafHash() {
-				continue
+		adds := blockchain.BlockToAddHashes(creation, skip, count)
+		positions := make(map[[32]byte]int32, len(adds))
+		for index := range adds {
+			// Preserve the first matching commitment, as the old scan did.
+			if _, exists := positions[adds[index].Hash]; !exists {
+				positions[adds[index].Hash] = int32(index)
 			}
-			var data [ttlSize]byte
-			if restore {
-				// No leaf is filtered for a lost undo: all were created
-				// before the checkpoint's final block.
-				byteOrder.PutUint32(data[:4], uint32(block.Height()))
-				byteOrder.PutUint32(data[4:], uint32(i))
-			}
-			if err := b.ttlState.OverWrite(ld.Height, int32(index)*ttlSize, data[:]); err != nil {
-				return err
-			}
-			found = true
-			break
 		}
-		if !found {
-			return fmt.Errorf("cannot recover creation index for %v", ld.OutPoint)
+		for _, i := range inputs {
+			index, found := positions[hasher.HashLeaf(&retained[i])]
+			if !found {
+				return fmt.Errorf("cannot recover creation index for %v", retained[i].OutPoint)
+			}
+			indexes[i] = index
+		}
+	}
+	for i, ld := range retained {
+		var data [ttlSize]byte
+		if restore {
+			// Lost undo retains every leaf, so i is its deletion index.
+			byteOrder.PutUint32(data[:4], uint32(block.Height()))
+			byteOrder.PutUint32(data[4:], uint32(i))
+		}
+		if err := b.ttlState.OverWrite(ld.Height, indexes[i]*ttlSize, data[:]); err != nil {
+			return err
 		}
 	}
 	return nil
