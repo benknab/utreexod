@@ -768,10 +768,10 @@ func (b *BlockChain) FetchUtxoEntry(outpoint wire.OutPoint) (*UtxoEntry, error) 
 		return nil, nil
 	}
 
-	entries, err := b.utxoCache.fetchEntries([]wire.OutPoint{outpoint})
+	entry, err := b.utxoCache.fetchEntry(outpoint)
 	if err != nil {
 		return nil, err
 	}
 
-	return entries[0].Clone(), nil
+	return entry.Clone(), nil
 }

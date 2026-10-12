@@ -69,6 +69,42 @@ func (m *utxoCacheMap) get(op wire.OutPoint) (*UtxoEntry, bool) {
 	return entry, found
 }
 
+// getMany fills cached results under one read lock and returns the indexes of
+// uncached outpoints. A cached nil entry is a hit, not another database lookup.
+func (m *utxoCacheMap) getMany(outpoints []wire.OutPoint, entries []*UtxoEntry) []int {
+	m.mtx.RLock()
+	defer m.mtx.RUnlock()
+	var missing []int
+	for i, op := range outpoints {
+		entry, found := m.entries[op]
+		if found {
+			entries[i] = entry
+			continue
+		}
+		if missing == nil {
+			missing = make([]int, 0, len(outpoints))
+		}
+		missing = append(missing, i)
+	}
+	return missing
+}
+
+// putIfAbsent retains the first fetched entry for repeated outpoints, including
+// cached nil misses. The bool indicates whether a new memory charge is needed.
+func (m *utxoCacheMap) putIfAbsent(op wire.OutPoint, entry *UtxoEntry) (*UtxoEntry, bool) {
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
+	if previous, found := m.entries[op]; found {
+		return previous, false
+	}
+	if m.entries == nil {
+		m.entries = make(map[wire.OutPoint]*UtxoEntry)
+	}
+	m.entries[op] = entry
+	m.insertions++
+	return entry, true
+}
+
 // put stores an entry and returns the previous entry, if any.
 //
 // This function is safe for concurrent access.
@@ -195,38 +231,21 @@ func (s *utxoCache) totalMemoryUsage() uint64 {
 // The returned entries are NOT safe for concurrent access.
 func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error) {
 	entries := make([]*UtxoEntry, len(outpoints))
-	var missingOps []wire.OutPoint
-	var missingOpsIdx []int
-	for i := range outpoints {
-		if entry, ok := s.cachedEntries.get(outpoints[i]); ok {
-			entries[i] = entry
-			continue
-		}
-
-		// At this point, we have missing outpoints.  Allocate them now
-		// so that we never allocate if the cache never misses.
-		if len(missingOps) == 0 {
-			missingOps = make([]wire.OutPoint, 0, len(outpoints))
-			missingOpsIdx = make([]int, 0, len(outpoints))
-		}
-
-		missingOpsIdx = append(missingOpsIdx, i)
-		missingOps = append(missingOps, outpoints[i])
-	}
+	missingOpsIdx := s.cachedEntries.getMany(outpoints, entries)
 
 	// Return early and don't attempt access the database if we don't have any
 	// missing outpoints.
-	if len(missingOps) == 0 {
+	if len(missingOpsIdx) == 0 {
 		return entries, nil
 	}
 
 	// Fetch the missing outpoints in the cache from the database.
-	dbEntries := make([]*UtxoEntry, len(missingOps))
+	dbEntries := make([]*UtxoEntry, len(missingOpsIdx))
 	err := s.db.View(func(dbTx database.Tx) error {
 		utxoBucket := dbTx.Metadata().Bucket(utxoSetBucketName)
 		fetchRange := func(start, end int) error {
 			for i := start; i < end; i++ {
-				entry, err := dbFetchUtxoEntry(dbTx, utxoBucket, missingOps[i])
+				entry, err := dbFetchUtxoEntry(dbTx, utxoBucket, outpoints[missingOpsIdx[i]])
 				if err != nil {
 					return err
 				}
@@ -242,10 +261,10 @@ func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error
 		// Two readers also avoid contention on GoLevelDB's shared caches
 		// when the database is already warm.
 		const maxReaders = 2
-		workers := min(maxReaders, runtime.GOMAXPROCS(0), len(missingOps)/128)
+		workers := min(maxReaders, runtime.GOMAXPROCS(0), len(missingOpsIdx)/128)
 		concurrent, ok := dbTx.(database.ConcurrentReadTx)
 		if workers < 2 || !ok || !concurrent.SupportsConcurrentReads() {
-			return fetchRange(0, len(missingOps))
+			return fetchRange(0, len(missingOpsIdx))
 		}
 
 		var wg sync.WaitGroup
@@ -254,11 +273,11 @@ func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs[worker] = fetchRange(len(missingOps)*worker/workers,
-					len(missingOps)*(worker+1)/workers)
+				errs[worker] = fetchRange(len(missingOpsIdx)*worker/workers,
+					len(missingOpsIdx)*(worker+1)/workers)
 			}()
 		}
-		errs[0] = fetchRange(0, len(missingOps)/workers)
+		errs[0] = fetchRange(0, len(missingOpsIdx)/workers)
 		wg.Wait()
 		// Contiguous ranges preserve the serial path's first-error order.
 		for _, err := range errs[:workers] {
@@ -283,20 +302,28 @@ func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error
 		// Repeated outpoints in the request must share the same entry and
 		// memory charge. A spent flag set through either reference must be
 		// visible through both.
-		if entry, ok := s.cachedEntries.get(missingOps[i]); ok {
-			dbEntries[i] = entry
-			continue
+		index := missingOpsIdx[i]
+		entry, inserted := s.cachedEntries.putIfAbsent(outpoints[index], dbEntries[i])
+		if inserted {
+			s.totalEntryMemory += entry.memoryUsage()
 		}
-		s.cachedEntries.put(missingOps[i], dbEntries[i])
-		s.totalEntryMemory += dbEntries[i].memoryUsage()
-	}
-
-	// Fill in the entries with the ones fetched from the database.
-	for i := range missingOpsIdx {
-		entries[missingOpsIdx[i]] = dbEntries[i]
+		entries[index] = entry
 	}
 
 	return entries, nil
+}
+
+// fetchEntry avoids allocating a result slice for single cached lookups. As
+// with fetchEntries, the caller must serialize access to the returned entry.
+func (s *utxoCache) fetchEntry(outpoint wire.OutPoint) (*UtxoEntry, error) {
+	if entry, ok := s.cachedEntries.get(outpoint); ok {
+		return entry, nil
+	}
+	entries, err := s.fetchEntries([]wire.OutPoint{outpoint})
+	if err != nil {
+		return nil, err
+	}
+	return entries[0], nil
 }
 
 // addTxOut adds the specified output to the cache if it is not provably
@@ -374,17 +401,16 @@ func (s *utxoCache) addTxOuts(tx *btcutil.Tx, blockHeight int32) error {
 func (s *utxoCache) addTxIn(txIn *wire.TxIn, stxos *[]SpentTxOut) error {
 	// Ensure the referenced utxo exists in the view.  This should
 	// never happen unless there is a bug is introduced in the code.
-	entries, err := s.fetchEntries([]wire.OutPoint{txIn.PreviousOutPoint})
+	entry, err := s.fetchEntry(txIn.PreviousOutPoint)
 	if err != nil {
 		return err
 	}
-	if len(entries) < 1 || entries[0] == nil {
+	if entry == nil {
 		return AssertError(fmt.Sprintf("missing input %v",
 			txIn.PreviousOutPoint))
 	}
 
 	// Only create the stxo details if requested.
-	entry := entries[0]
 	if stxos != nil {
 		// Populate the stxo details using the utxo entry.
 		var stxo = SpentTxOut{
