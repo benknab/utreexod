@@ -8,6 +8,8 @@ github.com/benknab/utreexo v0.0.0-20261011210729-0862d2d78e5e h1:NQGLcC+ShnMRJKe
 github.com/benknab/utreexo v0.0.0-20261011210729-0862d2d78e5e/go.mod h1:7BbTQYp48IyyfSmPG+QoWxldLfyO0+5zOqKw1lF27WE=
 github.com/benknab/utreexo v0.0.0-20261011214124-1fb7640596e4 h1:y/KgrzZW8xsHSX2dAOt+8jakDKEd18oD6hQFCEwuczc=
 github.com/benknab/utreexo v0.0.0-20261011214124-1fb7640596e4/go.mod h1:7BbTQYp48IyyfSmPG+QoWxldLfyO0+5zOqKw1lF27WE=
+github.com/benknab/utreexo v0.0.0-20261012101831-bbaf3405822c h1:QQbfaS81rMWfPZhlPtMdlcXsK1cL2+hXIPJFgJ757aY=
+github.com/benknab/utreexo v0.0.0-20261012101831-bbaf3405822c/go.mod h1:7BbTQYp48IyyfSmPG+QoWxldLfyO0+5zOqKw1lF27WE=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/btcsuite/btcd v0.20.1-beta/go.mod h1:wVuoA8VJLEcwgqHBwHmzLRazpKxTv13Px/pDuV7OomQ=
