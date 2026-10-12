@@ -32,7 +32,7 @@ func TestReorgFromForkPoint(t *testing.T) {
 	const (
 		sharedBlocks  = 10
 		shorterBlocks = 5
-		longerBlocks  = 20
+		longerBlocks  = 50 // Cross the bounded headers-first download window.
 	)
 	var (
 		sharedHeight  = int32(sharedBlocks)
