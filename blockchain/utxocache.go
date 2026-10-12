@@ -608,7 +608,14 @@ func (s *utxoCache) writeCache(dbTx database.Tx, bestState *BestState, retain bo
 // The optional returned callback must run only after a successful commit.
 // This function and the callback require the chain state lock (for writes).
 func (s *utxoCache) flush(dbTx database.Tx, mode FlushMode, bestState *BestState) (func(), error) {
-	full := s.totalMemoryUsage() >= s.maxTotalMemoryUsage
+	usage := s.totalMemoryUsage()
+	full := usage >= s.maxTotalMemoryUsage
+	if full && mode != FlushRequired && s.compactIfSparse() {
+		compacted := s.totalMemoryUsage()
+		log.Infof("Compacted UTXO cache charge from %d MiB to %d MiB (%d entries)",
+			usage>>20, compacted>>20, s.cachedEntries.length())
+		full = compacted >= s.maxTotalMemoryUsage
+	}
 	switch mode {
 	case FlushRequired:
 		full = true
