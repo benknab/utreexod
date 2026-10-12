@@ -47,80 +47,87 @@ func (v *txValidator) sendResult(result error) {
 	}
 }
 
+// validateItem executes one script pair, shared by serial and parallel callers.
+func (v *txValidator) validateItem(txVI *txValidateItem) error {
+	// Ensure the referenced input utxo is available.
+	txIn := txVI.txIn
+	utxo := v.utxoView.LookupEntry(txIn.PreviousOutPoint)
+	if utxo == nil {
+		str := fmt.Sprintf("unable to find unspent "+
+			"output %v referenced from "+
+			"transaction %s:%d",
+			txIn.PreviousOutPoint, txVI.tx.Hash(),
+			txVI.txInIndex)
+		return ruleError(ErrMissingTxOut, str)
+	}
+
+	// Create a new script engine for the script pair.
+	sigScript := txIn.SignatureScript
+	witness := txIn.Witness
+	pkScript := utxo.PkScript()
+	inputAmount := utxo.Amount()
+	vm, err := txscript.NewEngine(
+		pkScript, txVI.tx.MsgTx(), txVI.txInIndex,
+		v.flags, v.sigCache, txVI.sigHashes,
+		inputAmount, v.utxoView,
+	)
+	if err != nil {
+		str := fmt.Sprintf("failed to parse input "+
+			"%s:%d which references output %v - "+
+			"%v (input witness %x, input script "+
+			"bytes %x, prev output script bytes %x)",
+			txVI.tx.Hash(), txVI.txInIndex,
+			txIn.PreviousOutPoint, err, witness,
+			sigScript, pkScript)
+		return ruleError(ErrScriptMalformed, str)
+	}
+
+	// Execute the script pair.
+	if err := vm.Execute(); err != nil {
+		str := fmt.Sprintf("failed to validate input "+
+			"%s:%d which references output %v - "+
+			"%v (input witness %x, input script "+
+			"bytes %x, prev output script bytes %x)",
+			txVI.tx.Hash(), txVI.txInIndex,
+			txIn.PreviousOutPoint, err, witness,
+			sigScript, pkScript)
+		return ruleError(ErrScriptValidation, str)
+	}
+	return nil
+}
+
 // validateHandler consumes items to validate from the internal validate channel
 // and returns the result of the validation on the internal result channel. It
 // must be run as a goroutine.
 func (v *txValidator) validateHandler() {
-out:
 	for {
 		select {
 		case txVI := <-v.validateChan:
-			// Ensure the referenced input utxo is available.
-			txIn := txVI.txIn
-			utxo := v.utxoView.LookupEntry(txIn.PreviousOutPoint)
-			if utxo == nil {
-				str := fmt.Sprintf("unable to find unspent "+
-					"output %v referenced from "+
-					"transaction %s:%d",
-					txIn.PreviousOutPoint, txVI.tx.Hash(),
-					txVI.txInIndex)
-				err := ruleError(ErrMissingTxOut, str)
-				v.sendResult(err)
-				break out
-			}
-
-			// Create a new script engine for the script pair.
-			sigScript := txIn.SignatureScript
-			witness := txIn.Witness
-			pkScript := utxo.PkScript()
-			inputAmount := utxo.Amount()
-			vm, err := txscript.NewEngine(
-				pkScript, txVI.tx.MsgTx(), txVI.txInIndex,
-				v.flags, v.sigCache, txVI.sigHashes,
-				inputAmount, v.utxoView,
-			)
+			err := v.validateItem(txVI)
+			v.sendResult(err)
 			if err != nil {
-				str := fmt.Sprintf("failed to parse input "+
-					"%s:%d which references output %v - "+
-					"%v (input witness %x, input script "+
-					"bytes %x, prev output script bytes %x)",
-					txVI.tx.Hash(), txVI.txInIndex,
-					txIn.PreviousOutPoint, err, witness,
-					sigScript, pkScript)
-				err := ruleError(ErrScriptMalformed, str)
-				v.sendResult(err)
-				break out
+				return
 			}
-
-			// Execute the script pair.
-			if err := vm.Execute(); err != nil {
-				str := fmt.Sprintf("failed to validate input "+
-					"%s:%d which references output %v - "+
-					"%v (input witness %x, input script "+
-					"bytes %x, prev output script bytes %x)",
-					txVI.tx.Hash(), txVI.txInIndex,
-					txIn.PreviousOutPoint, err, witness,
-					sigScript, pkScript)
-				err := ruleError(ErrScriptValidation, str)
-				v.sendResult(err)
-				break out
-			}
-
-			// Validation succeeded.
-			v.sendResult(nil)
-
 		case <-v.quitChan:
-			break out
+			return
 		}
 	}
 }
 
 // Validate validates the scripts for all of the passed transaction inputs using
-// multiple goroutines.
-func (v *txValidator) Validate(items []*txValidateItem) error {
+// multiple goroutines. A validator is single-use.
+func (v *txValidator) Validate(items []txValidateItem) error {
 	if len(items) == 0 {
 		return nil
 	}
+	// There is no parallel work to distribute for a single input. Avoid the
+	// worker launch and channel handoffs common to mempool validation.
+	if len(items) == 1 {
+		return v.validateItem(&items[0])
+	}
+	v.validateChan = make(chan *txValidateItem)
+	v.quitChan = make(chan struct{})
+	v.resultChan = make(chan error)
 
 	// Limit the number of goroutines to do script validation based on the
 	// number of processor cores.  This helps ensure the system stays
@@ -153,7 +160,7 @@ func (v *txValidator) Validate(items []*txValidateItem) error {
 		var item *txValidateItem
 		if currentItem < numInputs {
 			validateChan = v.validateChan
-			item = items[currentItem]
+			item = &items[currentItem]
 		}
 
 		select {
@@ -178,13 +185,10 @@ func (v *txValidator) Validate(items []*txValidateItem) error {
 func newTxValidator(utxoView *UtxoViewpoint, flags txscript.ScriptFlags,
 	sigCache *txscript.SigCache, hashCache *txscript.HashCache) *txValidator {
 	return &txValidator{
-		validateChan: make(chan *txValidateItem),
-		quitChan:     make(chan struct{}),
-		resultChan:   make(chan error),
-		utxoView:     utxoView,
-		sigCache:     sigCache,
-		hashCache:    hashCache,
-		flags:        flags,
+		utxoView:  utxoView,
+		sigCache:  sigCache,
+		hashCache: hashCache,
+		flags:     flags,
 	}
 }
 
@@ -217,16 +221,17 @@ func ValidateTransactionScripts(tx *btcutil.Tx, utxoView *UtxoViewpoint,
 	}
 
 	// Collect all of the transaction inputs and required information for
-	// validation.
+	// validation. Keep descriptors in one backing array rather than allocating
+	// an object for every input; workers receive pointers into this array.
 	txIns := tx.MsgTx().TxIn
-	txValItems := make([]*txValidateItem, 0, len(txIns))
+	txValItems := make([]txValidateItem, 0, len(txIns))
 	for txInIdx, txIn := range txIns {
 		// Skip coinbases.
 		if txIn.PreviousOutPoint.Index == math.MaxUint32 {
 			continue
 		}
 
-		txVI := &txValidateItem{
+		txVI := txValidateItem{
 			txInIndex: txInIdx,
 			txIn:      txIn,
 			tx:        tx,
@@ -256,7 +261,7 @@ func checkBlockScripts(block *btcutil.Block, utxoView *UtxoViewpoint,
 	for _, tx := range block.Transactions() {
 		numInputs += len(tx.MsgTx().TxIn)
 	}
-	txValItems := make([]*txValidateItem, 0, numInputs)
+	txValItems := make([]txValidateItem, 0, numInputs)
 	for _, tx := range block.Transactions() {
 		hash := tx.Hash()
 
@@ -288,7 +293,7 @@ func checkBlockScripts(block *btcutil.Block, utxoView *UtxoViewpoint,
 				continue
 			}
 
-			txVI := &txValidateItem{
+			txVI := txValidateItem{
 				txInIndex: txInIdx,
 				txIn:      txIn,
 				tx:        tx,
