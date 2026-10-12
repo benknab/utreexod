@@ -5,8 +5,9 @@
 package txscript
 
 import (
-	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"hash"
 	"math"
 	"sync"
 
@@ -14,27 +15,45 @@ import (
 	"github.com/utreexo/utreexod/wire"
 )
 
+// Reuse a bounded streaming workspace instead of retaining preimages whose
+// size grows with the transaction. Each NewTxSigHashes call owns its workspace
+// until all midstates have been computed, including during parallel validation.
+type sigHashHasher struct {
+	digest  hash.Hash
+	amounts hash.Hash
+	scratch [36]byte
+	sum     chainhash.Hash
+}
+
+var sigHashHasherPool = sync.Pool{New: func() any {
+	return &sigHashHasher{digest: sha256.New(), amounts: sha256.New()}
+}}
+
+func (h *sigHashHasher) hash() chainhash.Hash {
+	h.digest.Sum(h.sum[:0])
+	return h.sum
+}
+
 // calcHashPrevOuts calculates a single hash of all the previous outputs
 // (txid:index) referenced within the passed transaction. This calculated hash
 // can be re-used when validating all inputs spending segwit outputs, with a
 // signature hash type of SigHashAll. This allows validation to re-use previous
 // hashing computation, reducing the complexity of validating SigHashAll inputs
 // from  O(N^2) to O(N).
-func calcHashPrevOuts(tx *wire.MsgTx) chainhash.Hash {
-	var b bytes.Buffer
+func (h *sigHashHasher) calcHashPrevOuts(tx *wire.MsgTx) chainhash.Hash {
+	h.digest.Reset()
 	for _, in := range tx.TxIn {
 		// First write out the 32-byte transaction ID one of whose
 		// outputs are being referenced by this input.
-		b.Write(in.PreviousOutPoint.Hash[:])
+		copy(h.scratch[:32], in.PreviousOutPoint.Hash[:])
 
 		// Next, we'll encode the index of the referenced output as a
 		// little endian integer.
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], in.PreviousOutPoint.Index)
-		b.Write(buf[:])
+		binary.LittleEndian.PutUint32(h.scratch[32:], in.PreviousOutPoint.Index)
+		h.digest.Write(h.scratch[:])
 	}
 
-	return chainhash.HashH(b.Bytes())
+	return h.hash()
 }
 
 // calcHashSequence computes an aggregated hash of each of the sequence numbers
@@ -43,15 +62,14 @@ func calcHashPrevOuts(tx *wire.MsgTx) chainhash.Hash {
 // using the SigHashAll sighash type. This allows validation to re-use previous
 // hashing computation, reducing the complexity of validating SigHashAll inputs
 // from O(N^2) to O(N).
-func calcHashSequence(tx *wire.MsgTx) chainhash.Hash {
-	var b bytes.Buffer
+func (h *sigHashHasher) calcHashSequence(tx *wire.MsgTx) chainhash.Hash {
+	h.digest.Reset()
 	for _, in := range tx.TxIn {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], in.Sequence)
-		b.Write(buf[:])
+		binary.LittleEndian.PutUint32(h.scratch[:4], in.Sequence)
+		h.digest.Write(h.scratch[:4])
 	}
 
-	return chainhash.HashH(b.Bytes())
+	return h.hash()
 }
 
 // calcHashOutputs computes a hash digest of all outputs created by the
@@ -59,13 +77,13 @@ func calcHashSequence(tx *wire.MsgTx) chainhash.Hash {
 // when validating all inputs spending witness programs, which include
 // signatures using the SigHashAll sighash type. This allows computation to be
 // cached, reducing the total hashing complexity from O(N^2) to O(N).
-func calcHashOutputs(tx *wire.MsgTx) chainhash.Hash {
-	var b bytes.Buffer
+func (h *sigHashHasher) calcHashOutputs(tx *wire.MsgTx) chainhash.Hash {
+	h.digest.Reset()
 	for _, out := range tx.TxOut {
-		wire.WriteTxOut(&b, 0, 0, out)
+		wire.WriteTxOut(h.digest, 0, 0, out)
 	}
 
-	return chainhash.HashH(b.Bytes())
+	return h.hash()
 }
 
 // PrevOutputFetcher is an interface used to supply the sighash cache with the
@@ -151,32 +169,22 @@ func (m *MultiPrevOutFetcher) Merge(other *MultiPrevOutFetcher) {
 // PrevOutputFetcher interface.
 var _ PrevOutputFetcher = (*MultiPrevOutFetcher)(nil)
 
-// calcHashInputAmounts computes a hash digest of the input amounts of all
-// inputs referenced in the passed transaction. This hash pre computation is only
-// used for validating taproot inputs.
-func calcHashInputAmounts(tx *wire.MsgTx, inputFetcher PrevOutputFetcher) chainhash.Hash {
-	var b bytes.Buffer
+// calcHashInputData computes the taproot input amount and script midstates in
+// one pass so each previous output only needs to be fetched once.
+func (h *sigHashHasher) calcHashInputData(tx *wire.MsgTx, inputFetcher PrevOutputFetcher) (chainhash.Hash, chainhash.Hash) {
+	h.digest.Reset()
+	h.amounts.Reset()
 	for _, txIn := range tx.TxIn {
 		prevOut := inputFetcher.FetchPrevOutput(txIn.PreviousOutPoint)
 
-		_ = binary.Write(&b, binary.LittleEndian, prevOut.Value)
+		binary.LittleEndian.PutUint64(h.scratch[:8], uint64(prevOut.Value))
+		h.amounts.Write(h.scratch[:8])
+		_ = wire.WriteVarBytes(h.digest, 0, prevOut.PkScript)
 	}
 
-	return chainhash.HashH(b.Bytes())
-}
-
-// calcHashInputAmts computes the hash digest of all the previous input scripts
-// referenced by the passed transaction. This hash pre computation is only used
-// for validating taproot inputs.
-func calcHashInputScripts(tx *wire.MsgTx, inputFetcher PrevOutputFetcher) chainhash.Hash {
-	var b bytes.Buffer
-	for _, txIn := range tx.TxIn {
-		prevOut := inputFetcher.FetchPrevOutput(txIn.PreviousOutPoint)
-
-		_ = wire.WriteVarBytes(&b, 0, prevOut.PkScript)
-	}
-
-	return chainhash.HashH(b.Bytes())
+	h.amounts.Sum(h.sum[:0])
+	amounts := h.sum
+	return amounts, h.hash()
 }
 
 // SegwitSigHashMidstate is the sighash midstate used in the base segwit
@@ -263,9 +271,11 @@ func NewTxSigHashes(tx *wire.MsgTx,
 	//
 	// Both v0 and v1 share this base data computed using a sha256 single
 	// hash.
-	sigHashes.HashPrevOutsV1 = calcHashPrevOuts(tx)
-	sigHashes.HashSequenceV1 = calcHashSequence(tx)
-	sigHashes.HashOutputsV1 = calcHashOutputs(tx)
+	hasher := sigHashHasherPool.Get().(*sigHashHasher)
+	defer sigHashHasherPool.Put(hasher)
+	sigHashes.HashPrevOutsV1 = hasher.calcHashPrevOuts(tx)
+	sigHashes.HashSequenceV1 = hasher.calcHashSequence(tx)
+	sigHashes.HashOutputsV1 = hasher.calcHashOutputs(tx)
 
 	// The v0 data is the same as the v1 (newer data) but it uses a double
 	// hash instead.
@@ -283,10 +293,7 @@ func NewTxSigHashes(tx *wire.MsgTx,
 
 	// Finally, we'll compute the taproot specific data if needed.
 	if hasV1Inputs {
-		sigHashes.HashInputAmountsV1 = calcHashInputAmounts(
-			tx, inputFetcher,
-		)
-		sigHashes.HashInputScriptsV1 = calcHashInputScripts(
+		sigHashes.HashInputAmountsV1, sigHashes.HashInputScriptsV1 = hasher.calcHashInputData(
 			tx, inputFetcher,
 		)
 	}
