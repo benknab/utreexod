@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/utreexo/utreexod/blockchain/internal/sizehelper"
@@ -269,24 +270,41 @@ func (s *utxoCache) fetchEntries(outpoints []wire.OutPoint) ([]*UtxoEntry, error
 
 		var wg sync.WaitGroup
 		var errs [maxReaders]error
+		var failedAt [maxReaders]int
+		var next atomic.Uint64
+		chunkSize := min(512, len(missingOpsIdx)/workers)
+		read := func(worker int) {
+			for {
+				start := int(next.Add(uint64(chunkSize))) - chunkSize
+				if start >= len(missingOpsIdx) {
+					return
+				}
+				if err := fetchRange(start, min(start+chunkSize, len(missingOpsIdx))); err != nil {
+					errs[worker], failedAt[worker] = err, start
+					return
+				}
+			}
+		}
 		for worker := 1; worker < workers; worker++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				errs[worker] = fetchRange(len(missingOpsIdx)*worker/workers,
-					len(missingOpsIdx)*(worker+1)/workers)
+				read(worker)
 			}()
 		}
-		errs[0] = fetchRange(0, len(missingOpsIdx)/workers)
+		read(0)
 		wg.Wait()
-		// Contiguous ranges preserve the serial path's first-error order.
-		for _, err := range errs[:workers] {
-			if err != nil {
-				return err
+		// Readers share uneven misses in small ranges. Join them all before
+		// choosing the lowest failing range, preserving serial error order.
+		first := len(missingOpsIdx)
+		var firstErr error
+		for worker, err := range errs[:workers] {
+			if err != nil && failedAt[worker] < first {
+				first, firstErr = failedAt[worker], err
 			}
 		}
 
-		return nil
+		return firstErr
 	})
 	if err != nil {
 		return nil, err
