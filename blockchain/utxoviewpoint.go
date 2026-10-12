@@ -586,16 +586,23 @@ func (view *UtxoViewpoint) findInputsToFetch(block *btcutil.Block) []wire.OutPoi
 	// Build a map of in-flight transactions because some of the inputs in
 	// this block could be referencing other transactions earlier in this
 	// block which are not yet in the chain.
-	txInFlight := map[chainhash.Hash]int{}
 	transactions := block.Transactions()
+	txInFlight := make(map[chainhash.Hash]int, len(transactions))
+	var inputCount int
 	for i, tx := range transactions {
 		txInFlight[*tx.Hash()] = i
+		if i != 0 {
+			inputCount += len(tx.MsgTx().TxIn)
+		}
 	}
+	// A source transaction can supply many inputs. Load its outputs only
+	// once, keeping fan-out/fan-in blocks linear in their input/output count.
+	added := make([]bool, len(transactions))
 
 	// Loop through all of the transaction inputs (except for the coinbase
 	// which has no inputs) collecting them into sets of what is needed and
 	// what is already known (in-flight).
-	needed := make([]wire.OutPoint, 0, len(transactions))
+	needed := make([]wire.OutPoint, 0, inputCount)
 	for i, tx := range transactions[1:] {
 		for _, txIn := range tx.MsgTx().TxIn {
 			// It is acceptable for a transaction input to reference
@@ -613,8 +620,11 @@ func (view *UtxoViewpoint) findInputsToFetch(block *btcutil.Block) []wire.OutPoi
 			if inFlightIndex, ok := txInFlight[*originHash]; ok &&
 				i >= inFlightIndex {
 
-				originTx := transactions[inFlightIndex]
-				view.AddTxOuts(originTx, block.Height())
+				if !added[inFlightIndex] {
+					originTx := transactions[inFlightIndex]
+					view.AddTxOuts(originTx, block.Height())
+					added[inFlightIndex] = true
+				}
 				continue
 			}
 
