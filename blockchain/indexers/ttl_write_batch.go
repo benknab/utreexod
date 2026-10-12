@@ -2,8 +2,30 @@ package indexers
 
 import (
 	"cmp"
+	"math/bits"
 	"slices"
+
+	"github.com/utreexo/utreexod/wire"
 )
+
+// ttlWriteBatchSize uses a small source-height sketch to avoid paying for a
+// larger sort when writes are widely scattered. Collisions can only choose a
+// larger bounded batch; they never affect record validation or write contents.
+func ttlWriteBatchSize(lds []wire.LeafData) int {
+	var sources [4]uint64
+	for _, ld := range lds[:min(1024, len(lds))] {
+		slot := (uint32(ld.Height) * 0x9e3779b9) >> 24
+		sources[slot/64] |= uint64(1) << (slot % 64)
+	}
+	count := 0
+	for _, word := range sources {
+		count += bits.OnesCount64(word)
+	}
+	if count <= 128 {
+		return 4096
+	}
+	return 1024
+}
 
 // ttlWrite retains the original deletion index even when disk writes are
 // grouped by location. Ties sort by index so the last duplicate wins.
@@ -14,7 +36,7 @@ type ttlWrite struct {
 	index  uint32
 }
 
-// writeTTLBatch groups at most 1024 validated writes within record and 4 KiB
+// writeTTLBatch groups at most 4096 validated writes within record and 4 KiB
 // page boundaries. The flat-file lock covers reads as well as writes, so
 // unchanged bytes cannot race another writer. No buffer survives this call.
 func (ff *FlatFileState) writeTTLBatch(height int32, writes []ttlWrite) error {

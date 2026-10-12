@@ -1623,9 +1623,9 @@ func writeTTLs(curHeight int32, createdIndexes []int32, lds []wire.LeafData,
 		}
 	}()
 
-	const batchSize = 1024
+	batchSize := ttlWriteBatchSize(lds)
 	if ttlIdx.ttlWrites == nil {
-		ttlIdx.ttlWrites = make([]ttlWrite, 0, batchSize)
+		ttlIdx.ttlWrites = make([]ttlWrite, 0, 4096)
 	}
 	writes := ttlIdx.ttlWrites[:0]
 	for i, ld := range lds {
