@@ -235,6 +235,7 @@ type SyncManager struct {
 	queuedTTLs          map[int32]wire.UtreexoTTL
 	queuedBlocks        map[chainhash.Hash]*blockMsg
 	queuedUtreexoProofs map[chainhash.Hash]*utreexoProofMsg
+	headerDownloads     map[chainhash.Hash]*headerDownload
 
 	// An optional fee estimator.
 	feeEstimator *mempool.FeeEstimator
@@ -537,6 +538,10 @@ func (sm *SyncManager) handleStallSample() {
 	if atomic.LoadInt32(&sm.shutdown) != 0 {
 		return
 	}
+	if len(sm.headerDownloads) != 0 {
+		sm.expireHeaderDownloads(time.Now())
+		return
+	}
 
 	// If we don't have an active sync peer, exit early.
 	if sm.syncPeer == nil {
@@ -599,11 +604,20 @@ func (sm *SyncManager) handleDonePeerMsg(peer *peerpkg.Peer) {
 	log.Infof("Lost peer %s", peer)
 
 	sm.clearRequestedState(state)
+	hadDownloads := len(sm.headerDownloads) != 0
+	for hash, request := range sm.headerDownloads {
+		if request.peer == peer {
+			delete(sm.headerDownloads, hash)
+		}
+	}
 
 	if peer == sm.syncPeer {
 		// Update the sync peer. The server has already disconnected the
 		// peer before signaling to the sync manager.
 		sm.updateSyncPeer(false)
+	}
+	if hadDownloads {
+		sm.fetchHeaderBlocks(nil)
 	}
 }
 
@@ -773,6 +787,13 @@ func (sm *SyncManager) checkHeadersList(block *btcutil.Block) (
 
 // handleBlockMsg handles block messages from all peers.
 func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
+	if sm.receiveHeaderBlock(bmsg) {
+		return
+	}
+	sm.processBlockMsg(bmsg)
+}
+
+func (sm *SyncManager) processBlockMsg(bmsg *blockMsg) {
 	peer := bmsg.peer
 	state, exists := sm.peerStates[peer]
 	if !exists {
@@ -1054,6 +1075,9 @@ func (sm *SyncManager) fetchUtreexoTTLs(peer *peerpkg.Peer) {
 // list of blocks to be downloaded based on the current list of headers.
 // Will fetch from the peer if it's not nil. Otherwise it'll default to the syncPeer.
 func (sm *SyncManager) fetchHeaderBlocks(peer *peerpkg.Peer) {
+	if sm.fetchParallelHeaderBlocks() {
+		return
+	}
 	// Can't fetch if both are nil.
 	if peer == nil && sm.syncPeer == nil {
 		log.Warnf("fetchHeaderBlocks called with syncPeer and peer as nil")
@@ -1413,6 +1437,10 @@ func (sm *SyncManager) handleNotFoundMsg(nfmsg *notFoundMsg) {
 			fallthrough
 		case wire.InvTypeBlock:
 			if _, exists := state.requestedBlocks[inv.Hash]; exists {
+				if request := sm.headerDownloads[inv.Hash]; request != nil && request.peer == peer {
+					state.syncCandidate = false
+					peer.Disconnect()
+				}
 				delete(state.requestedBlocks, inv.Hash)
 				// The global map of requestedBlocks is not used
 				// during headersFirstMode.
