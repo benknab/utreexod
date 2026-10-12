@@ -190,6 +190,8 @@ func (b *BackgroundProofIndex) run() {
 }
 
 func (b *BackgroundProofIndex) process() error {
+	reader := proofReplayReader{fetch: b.fetchReplayBlock}
+	defer reader.drain()
 	var plan *proofReplayIntent
 	var pending *proofReplayIntent
 	var prepared chan error
@@ -212,6 +214,7 @@ func (b *BackgroundProofIndex) process() error {
 	for {
 		select {
 		case <-b.quit:
+			reader.drain()
 			if err := join(); err != nil {
 				return err
 			}
@@ -219,6 +222,7 @@ func (b *BackgroundProofIndex) process() error {
 		default:
 		}
 		if b.paused.Load() {
+			reader.drain()
 			if err := join(); err != nil {
 				return err
 			}
@@ -235,6 +239,7 @@ func (b *BackgroundProofIndex) process() error {
 		// worker may finish a block concurrently disconnected by validation;
 		// the next iteration will undo it on that original branch.
 		if b.tip.Height >= 0 && !b.chain.MainChainHasBlock(&b.tip.Hash) {
+			reader.drain()
 			if err := join(); err != nil {
 				return err
 			}
@@ -246,6 +251,7 @@ func (b *BackgroundProofIndex) process() error {
 		}
 		best := b.chain.BestSnapshot()
 		if b.tip.Height >= best.Height {
+			reader.drain()
 			if err := join(); err != nil {
 				return err
 			}
@@ -307,20 +313,18 @@ func (b *BackgroundProofIndex) process() error {
 			prepared = make(chan error, 1)
 			go func(done chan<- error) { done <- b.persistIntent(encoded) }(prepared)
 		}
-		block, err := b.chain.BlockByHeightOnBranch(&plan.To.Hash, b.tip.Height+1)
-		if err != nil {
-			return err
+		read := reader.take(plan.To, b.tip.Height+1)
+		if read.err != nil {
+			return read.err
 		}
+		block, stxos := read.block, read.stxos
 		if block.Height() > 0 && block.MsgBlock().Header.PrevBlock != b.tip.Hash {
 			return fmt.Errorf("proof replay block %v does not extend tip %v", block.Hash(), b.tip.Hash)
 		}
-		stxos, err := b.chain.FetchSpendJournalForBlock(block)
-		if err != nil {
-			return err
-		}
+		reader.start(plan.To, block.Height()+1)
 		b.access.Lock()
 		b.publish(true)
-		err = b.FlatUtreexoProofIndex.ConnectBlock(nil, block, stxos)
+		err := b.FlatUtreexoProofIndex.ConnectBlock(nil, block, stxos)
 		if err == nil {
 			b.tip = proofTip{Hash: *block.Hash(), Height: block.Height()}
 			b.dirty = true
@@ -332,6 +336,7 @@ func (b *BackgroundProofIndex) process() error {
 		}
 		progress.LogBlockHeight(block)
 		if b.utreexoState.state.FlushNeeded() || time.Since(b.lastFlushTime) >= blockchain.UtxoFlushPeriodicInterval {
+			reader.join()
 			if err := join(); err != nil {
 				return err
 			}
