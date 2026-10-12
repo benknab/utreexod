@@ -292,14 +292,24 @@ func CheckTransactionSanity(tx *btcutil.Tx) error {
 		}
 	}
 
-	// Check for duplicate transaction inputs.
-	existingTxOut := make(map[wire.OutPoint]struct{})
-	for _, txIn := range msgTx.TxIn {
-		if _, exists := existingTxOut[txIn.PreviousOutPoint]; exists {
+	// Most transactions have one or two inputs. Check those directly rather
+	// than building a set, and size the set once for larger transactions.
+	switch len(msgTx.TxIn) {
+	case 1:
+	case 2:
+		if msgTx.TxIn[0].PreviousOutPoint == msgTx.TxIn[1].PreviousOutPoint {
 			return ruleError(ErrDuplicateTxInputs, "transaction "+
 				"contains duplicate inputs")
 		}
-		existingTxOut[txIn.PreviousOutPoint] = struct{}{}
+	default:
+		existingTxOut := make(map[wire.OutPoint]struct{}, len(msgTx.TxIn))
+		for _, txIn := range msgTx.TxIn {
+			if _, exists := existingTxOut[txIn.PreviousOutPoint]; exists {
+				return ruleError(ErrDuplicateTxInputs, "transaction "+
+					"contains duplicate inputs")
+			}
+			existingTxOut[txIn.PreviousOutPoint] = struct{}{}
+		}
 	}
 
 	// Coinbase script length must be between min and max length.
