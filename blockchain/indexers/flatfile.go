@@ -60,6 +60,7 @@ type FlatFileState struct {
 
 	// Scratch for one locked TTL batch. Entries never survive the batch.
 	overwriteRecords map[int32]flatFileRecord
+	ttlWrites        []ttlWrite
 }
 
 // recoverOffsetFile recovers the offset file to the latest readable offset.

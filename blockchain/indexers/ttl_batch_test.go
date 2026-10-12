@@ -2,6 +2,8 @@ package indexers
 
 import (
 	"fmt"
+	"math/rand"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -100,5 +102,53 @@ func BenchmarkTTLBatchHeaders(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+func TestTTLPageBatchesPreserveBytes(t *testing.T) {
+	f, lds, indexes := ttlBatchFixture(t, 7)
+	rng := rand.New(rand.NewSource(42))
+	want, err := os.ReadFile(f.dataFile.Name())
+	require.NoError(t, err)
+	// Nonzero data detects accidental overwrites of untouched gaps. Record
+	// sizes shift payloads across page boundaries at every source height.
+	for h := 1; h <= 7; h++ {
+		start := f.offsets[h] + 8
+		rng.Read(want[start : start+5000*ttlSize])
+	}
+	_, err = f.dataFile.WriteAt(want, 0)
+	require.NoError(t, err)
+	for i := range lds {
+		h := rng.Intn(7) + 1
+		index := rng.Intn(5000)
+		lds[i].Height = int32(h)
+		indexes[i] = int32(index)
+		offset := f.offsets[h] + 8 + int64(index*ttlSize)
+		byteOrder.PutUint32(want[offset:], 100)
+		byteOrder.PutUint32(want[offset+4:], uint32(i))
+	}
+	require.NoError(t, writeTTLs(100, indexes, lds, f))
+	got, err := os.ReadFile(f.dataFile.Name())
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func BenchmarkTTLScatteredWrites(b *testing.B) {
+	for _, heights := range []int{7, 100, 1000} {
+		b.Run(fmt.Sprintf("heights=%d", heights), func(b *testing.B) {
+			f, lds, indexes := ttlBatchFixture(b, heights)
+			rng := rand.New(rand.NewSource(42))
+			for i := range lds {
+				lds[i].Height = int32(rng.Intn(heights) + 1)
+				indexes[i] = int32(rng.Intn(5000))
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if err := writeTTLs(10000, indexes, lds, f); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

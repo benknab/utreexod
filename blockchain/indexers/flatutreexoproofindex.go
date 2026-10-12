@@ -1604,7 +1604,6 @@ func writeTTLs(curHeight int32, createdIndexes []int32, lds []wire.LeafData,
 	if ttlIdx == nil || len(lds) == 0 {
 		return nil
 	}
-	var buf [4096]byte
 
 	// Take the lock once for all writes instead of per-write.
 	ttlIdx.mtx.Lock()
@@ -1624,8 +1623,12 @@ func writeTTLs(curHeight int32, createdIndexes []int32, lds []wire.LeafData,
 		}
 	}()
 
-	for i := 0; i < len(lds); {
-		ld := lds[i]
+	const batchSize = 1024
+	if ttlIdx.ttlWrites == nil {
+		ttlIdx.ttlWrites = make([]ttlWrite, 0, batchSize)
+	}
+	writes := ttlIdx.ttlWrites[:0]
+	for i, ld := range lds {
 		cIndex := createdIndexes[i]
 
 		record, ok := records[ld.Height]
@@ -1637,27 +1640,18 @@ func writeTTLs(curHeight int32, createdIndexes []int32, lds []wire.LeafData,
 			}
 			records[ld.Height] = record
 		}
-		// Only merge consecutive writes already adjacent in input order.
-		// Duplicate or out-of-order indexes retain ordinary overwrite order.
-		end := i + 1
-		for end < len(lds) && end-i < len(buf)/ttlSize && lds[end].Height == ld.Height &&
-			int64(createdIndexes[end]) == int64(cIndex)+int64(end-i) {
-			end++
-		}
-		for j := i; j < end; j++ {
-			start := (j - i) * ttlSize
-			byteOrder.PutUint32(buf[start:start+uint32Size], uint32(curHeight))
-			byteOrder.PutUint32(buf[start+uint32Size:start+ttlSize], uint32(j))
-		}
 		offset := int64(cIndex) * ttlSize
-		if offset < 0 || offset > int64(1<<31-1) {
+		if offset < 0 || offset > int64(1<<31-1) || offset+ttlSize > record.size {
 			return fmt.Errorf("overwrite outside height %d record: invalid TTL index %d", ld.Height, cIndex)
 		}
-		err := ttlIdx.overwriteRecordLocked(ld.Height, record, int32(offset), buf[:(end-i)*ttlSize])
-		if err != nil {
-			return err
+		writes = append(writes, ttlWrite{offset: record.offset + offset,
+			record: record, height: ld.Height, index: uint32(i)})
+		if len(writes) == batchSize || i == len(lds)-1 {
+			if err := ttlIdx.writeTTLBatch(curHeight, writes); err != nil {
+				return err
+			}
+			writes = writes[:0]
 		}
-		i = end
 	}
 
 	return nil
