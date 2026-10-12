@@ -511,6 +511,30 @@ func (s *utxoCache) connectTransactions(block *btcutil.Block, stxos *[]SpentTxOu
 	return nil
 }
 
+// prefetchBlockInputs loads external prevouts before a known-valid block is
+// connected. Fast-add skips the validation view's bulk fetch, so without this
+// step each missing input opens its own snapshot and reads serially. Earlier
+// same-block outputs are supplied by ordered connection, never by this fetch.
+// The caller holds the chain write lock; fetchEntries joins all snapshot readers
+// before publishing entries. This only warms the cache, without spending inputs.
+func (s *utxoCache) prefetchBlockInputs(block *btcutil.Block) error {
+	transactions := block.Transactions()
+	prior := make(map[chainhash.Hash]struct{}, len(transactions))
+	var needed []wire.OutPoint
+	for _, tx := range transactions {
+		if !IsCoinBase(tx) {
+			for _, input := range tx.MsgTx().TxIn {
+				if _, local := prior[input.PreviousOutPoint.Hash]; !local {
+					needed = append(needed, input.PreviousOutPoint)
+				}
+			}
+		}
+		prior[*tx.Hash()] = struct{}{}
+	}
+	_, err := s.fetchEntries(needed)
+	return err
+}
+
 // writeCache stages cached entries in the database transaction. Its returned
 // callback must run only after the transaction commits successfully, while the
 // chain lock is still held. A rollback must leave the cache available for retry.

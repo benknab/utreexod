@@ -1684,6 +1684,11 @@ func (b *BlockChain) connectBestChain(node *blockNode, block *btcutil.Block, fla
 		} else {
 			// Connect the transactions to the cache.  All the txs are considered valid
 			// at this point as they have passed validation or was considered valid already.
+			if fastAdd {
+				if err := b.utxoCache.prefetchBlockInputs(block); err != nil {
+					return false, err
+				}
+			}
 			err := b.utxoCache.connectTransactions(block, &stxos)
 			if err != nil {
 				return false, err
