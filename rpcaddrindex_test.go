@@ -59,7 +59,7 @@ func TestRPCDuringAddressCatchUp(t *testing.T) {
 	rpc, err := newRPCServer(&rpcserverConfig{
 		Listeners: []net.Listener{listener}, Chain: chain, DB: db,
 		ChainParams: &params, TimeSource: blockchain.NewMedianTime(),
-		TxIndex: txIndex, AddrIndex: addrIndex, BackgroundAddrIndex: worker,
+		TxIndex: txIndex, AddrIndex: worker,
 		FlatUtreexoProofIndex: proofIndex, TxMemPool: mempool.New(&mempool.Config{ChainParams: &params}),
 	})
 	require.NoError(t, err)
@@ -97,6 +97,12 @@ func TestRPCDuringAddressCatchUp(t *testing.T) {
 	_, addresses, _, err := txscript.ExtractPkScriptAddrs(params.GenesisBlock.Transactions[0].TxOut[0].PkScript, &params)
 	require.NoError(t, err)
 	address := addresses[0].EncodeAddress()
+	// Fill the unconfirmed index so the reverse count=1 request could bypass
+	// the database entirely if the early readiness check were removed.
+	unconfirmed := btcutil.NewTx(wire.NewMsgTx(1))
+	unconfirmed.MsgTx().AddTxOut(params.GenesisBlock.Transactions[0].TxOut[0])
+	addrIndex.AddUnconfirmedTx(unconfirmed, blockchain.NewUtxoViewpoint())
+	require.Len(t, addrIndex.UnconfirmedTxnsForAddress(addresses[0]), 1)
 	for _, args := range [][]interface{}{
 		{address}, {address, 0, 0, 0}, {address, 0, 0, 1, 0, true},
 	} {
@@ -105,6 +111,7 @@ func TestRPCDuringAddressCatchUp(t *testing.T) {
 		require.Equal(t, btcjson.ErrRPCInWarmup, result.Error.Code)
 		require.Contains(t, result.Error.Message, "getaddrindexinfo")
 	}
+	addrIndex.RemoveUnconfirmedTx(unconfirmed.Hash())
 
 	// The calls needed for discovery alternatives and Greenhold proofs remain
 	// available, and proof output verifies against the live accumulator.

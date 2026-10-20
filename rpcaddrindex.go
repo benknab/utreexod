@@ -8,10 +8,10 @@ import (
 )
 
 func handleGetAddrIndexInfo(s *rpcServer, _ interface{}, _ <-chan struct{}) (interface{}, error) {
-	if s.cfg.BackgroundAddrIndex == nil {
+	if s.cfg.AddrIndex == nil {
 		return nil, &btcjson.RPCError{Code: btcjson.ErrRPCMisc, Message: "Address index must be enabled (--addrindex)"}
 	}
-	status, err := s.cfg.BackgroundAddrIndex.Snapshot()
+	status, err := s.cfg.AddrIndex.Snapshot()
 	if err != nil {
 		return nil, internalRPCError(err.Error(), "Failed to read address index status")
 	}

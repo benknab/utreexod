@@ -84,14 +84,10 @@ func (f *addrWorkerFixture) add(prev *btcutil.Block, spend *blockchain.Spendable
 	if spend != nil {
 		msg.Transactions[1].TxIn[0].SignatureScript = []byte{1, txscript.OP_TRUE}
 	}
-	txs := make([]*btcutil.Tx, len(msg.Transactions))
-	for i, tx := range msg.Transactions {
-		txs[i] = btcutil.NewTx(tx)
-	}
-	merkle := blockchain.BuildMerkleTreeStore(txs, false)
+	block = btcutil.NewBlock(msg)
+	merkle := blockchain.BuildMerkleTreeStore(block.Transactions(), false)
 	msg.Header.MerkleRoot = *merkle[len(merkle)-1]
 	require.True(f.t, blockchain.SolveBlock(&msg.Header))
-	block = btcutil.NewBlock(msg)
 	block.SetHeight(prev.Height() + 1)
 	_, _, err = f.chain.ProcessBlock(block, blockchain.BFNone)
 	require.NoError(f.t, err)
@@ -107,7 +103,7 @@ func (f *addrWorkerFixture) status() AddrIndexStatus {
 
 func (f *addrWorkerFixture) catchUp() {
 	for i := 0; i < 100 && !f.status().Synced; i++ {
-		_, err := f.worker.step()
+		_, _, err := f.worker.step()
 		require.NoError(f.t, err)
 	}
 	require.True(f.t, f.status().Synced)
@@ -129,9 +125,9 @@ func TestBackgroundAddrCatchUpRestartAndReorg(t *testing.T) {
 	require.Equal(t, int32(-1), f.status().Height)
 	require.Equal(t, b3.Height(), f.status().ValidatedHeight)
 	require.ErrorIs(t, f.db.View(f.worker.CheckReady), ErrAddrIndexNotReady)
-	_, err := f.worker.step() // Genesis only.
+	_, _, err := f.worker.step() // Genesis only.
 	require.NoError(t, err)
-	_, err = f.worker.step() // First block, including address entries.
+	_, _, err = f.worker.step() // First block, including address entries.
 	require.NoError(t, err)
 	f.restart()
 	require.Equal(t, b1.Height(), f.status().Height)
@@ -201,7 +197,7 @@ func (db failedAddrCommit) Update(fn func(database.Tx) error) error {
 
 func TestBackgroundAddrFailureIsAtomicAndDoesNotStopValidation(t *testing.T) {
 	f := newAddrWorkerFixture(t)
-	_, err := f.worker.step() // Commit genesis before failing a nonempty block.
+	_, _, err := f.worker.step() // Commit genesis before failing a nonempty block.
 	require.NoError(t, err)
 	b1, out := f.add(btcutil.NewBlock(f.params.GenesisBlock), nil)
 	f.worker.db = failedAddrCommit{f.db}
@@ -265,6 +261,30 @@ func (db beforeAddrCommit) Update(fn func(database.Tx) error) error {
 	return db.DB.Update(fn)
 }
 
+func TestBackgroundAddrStopWhileBehind(t *testing.T) {
+	f := newAddrWorkerFixture(t)
+	f.add(btcutil.NewBlock(f.params.GenesisBlock), nil)
+	entered := make(chan struct{}, 1)
+	f.worker.db = beforeAddrCommit{DB: f.db, before: func() {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-f.worker.quit // Hold the first prepared block until Stop requests exit.
+	}}
+	f.worker.Start()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not prepare its first block")
+	}
+	require.NoError(t, f.worker.Stop())
+	require.Equal(t, int32(0), f.status().Height) // Genesis committed; b1 was not processed.
+	require.False(t, f.status().Synced)
+	f.restart()
+	f.catchUp()
+}
+
 func TestBackgroundAddrRechecksPreparedBranch(t *testing.T) {
 	for _, disconnect := range []bool{false, true} {
 		name := "connect"
@@ -290,7 +310,7 @@ func TestBackgroundAddrRechecksPreparedBranch(t *testing.T) {
 				}
 			} else {
 				for i := 0; i < 2; i++ {
-					_, err := f.worker.step() // Genesis and b1.
+					_, _, err := f.worker.step() // Genesis and b1.
 					require.NoError(t, err)
 				}
 				// The worker prepares b2 while it is canonical. Validation
@@ -303,9 +323,10 @@ func TestBackgroundAddrRechecksPreparedBranch(t *testing.T) {
 			}
 			initial := f.status()
 			f.worker.db = beforeAddrCommit{DB: f.db, before: before}
-			block, err := f.worker.step()
+			block, idle, err := f.worker.step()
 			require.NoError(t, err)
 			require.Nil(t, block)
+			require.False(t, idle)
 			require.Equal(t, initial.BestBlockHash, f.status().BestBlockHash)
 			f.worker.db = f.db
 			f.catchUp()

@@ -5781,12 +5781,11 @@ type rpcserverConfig struct {
 	// These fields define any optional indexes the RPC server can make use
 	// of to provide additional data when queried.
 	TxIndex               *indexers.TxIndex
-	AddrIndex             *indexers.AddrIndex
+	AddrIndex             *indexers.BackgroundAddrIndex
 	CfIndex               *indexers.CfIndex
 	UtreexoProofIndex     *indexers.UtreexoProofIndex
 	FlatUtreexoProofIndex *indexers.FlatUtreexoProofIndex
 	BackgroundProofIndex  *indexers.BackgroundProofIndex
-	BackgroundAddrIndex   *indexers.BackgroundAddrIndex
 
 	// The fee estimator keeps track of how long transactions are left in
 	// the mempool before they are mined into blocks.

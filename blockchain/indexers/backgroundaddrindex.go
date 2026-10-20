@@ -135,28 +135,20 @@ func (b *BackgroundAddrIndex) process() error {
 			return nil
 		default:
 		}
-		block, err := b.step()
+		block, idle, err := b.step()
 		if err != nil {
 			return err
 		}
 		if block != nil {
 			progress.LogBlockHeight(block)
+		}
+		if !idle {
 			continue
 		}
-		status, err := b.Snapshot()
-		if err != nil {
-			return err
-		}
-		if !status.Synced {
-			// Continue rollback or retry a block invalidated by a reorg.
-			continue
-		}
-		timer := time.NewTimer(time.Second)
 		select {
 		case <-b.quit:
-			timer.Stop()
 			return nil
-		case <-timer.C:
+		case <-time.After(time.Second):
 		}
 	}
 }
@@ -164,11 +156,12 @@ func (b *BackgroundAddrIndex) process() error {
 // step prepares one block without holding a writer or chain lock. The write
 // transaction rechecks branch membership against the foreground tx index.
 // A reorg can invalidate preparation; in that case the next step retries.
-func (b *BackgroundAddrIndex) step() (*btcutil.Block, error) {
+// idle is true only when both index tips match, not after rollback or retry.
+func (b *BackgroundAddrIndex) step() (block *btcutil.Block, idle bool, err error) {
 	var tip, target *chainhash.Hash
 	var height, targetHeight int32
 	var disconnect bool
-	err := b.db.View(func(tx database.Tx) error {
+	err = b.db.View(func(tx database.Tx) error {
 		var err error
 		tip, height, err = dbFetchIndexerTip(tx, addrIndexKey)
 		if err != nil {
@@ -186,28 +179,28 @@ func (b *BackgroundAddrIndex) step() (*btcutil.Block, error) {
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !disconnect && height == targetHeight && *tip == *target {
-		return nil, nil
+		return nil, true, nil
 	}
 	anchor, nextHeight := target, height+1
 	if disconnect {
 		anchor, nextHeight = tip, height
 	}
-	block, err := b.chain.BlockByHeightOnBranch(anchor, nextHeight)
+	block, err = b.chain.BlockByHeightOnBranch(anchor, nextHeight)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	stxos, err := b.chain.FetchSpendJournalForBlock(block)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	data := make(writeIndexData)
 	b.indexBlock(data, block, stxos)
 	txLocs, err := block.TxLoc()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	applied := false
 	err = b.db.Update(func(tx database.Tx) error {
@@ -219,37 +212,31 @@ func (b *BackgroundAddrIndex) step() (*btcutil.Block, error) {
 			return fmt.Errorf("address index changed outside its worker")
 		}
 		blockID, err := dbFetchBlockIDByHash(tx, block.Hash())
+		missing := errors.Is(err, errNoBlockIDEntry)
+		if err != nil && !missing {
+			return err
+		}
+		if disconnect != missing {
+			return nil // A reorg invalidated the prepared operation.
+		}
 		if disconnect {
-			if err == nil {
-				return nil // The old branch became canonical again.
-			}
-			if !errors.Is(err, errNoBlockIDEntry) {
-				return err
-			}
 			if err := disconnectAddrEntries(tx, data); err != nil {
 				return err
 			}
-			err = dbPutIndexerTip(tx, addrIndexKey, &block.MsgBlock().Header.PrevBlock, height-1)
-		} else {
-			if errors.Is(err, errNoBlockIDEntry) {
-				return nil // Validation disconnected the prepared block.
-			}
-			if err != nil {
-				return err
-			}
-			if block.MsgBlock().Header.PrevBlock != *tip {
-				return fmt.Errorf("address replay block does not extend its tip")
-			}
-			if err := connectAddrEntries(tx, blockID, txLocs, data); err != nil {
-				return err
-			}
-			err = dbPutIndexerTip(tx, addrIndexKey, block.Hash(), nextHeight)
+			return dbPutIndexerTip(tx, addrIndexKey, &block.MsgBlock().Header.PrevBlock, height-1)
 		}
+		if block.MsgBlock().Header.PrevBlock != *tip {
+			return fmt.Errorf("address replay block does not extend its tip")
+		}
+		if err := connectAddrEntries(tx, blockID, txLocs, data); err != nil {
+			return err
+		}
+		err = dbPutIndexerTip(tx, addrIndexKey, block.Hash(), nextHeight)
 		applied = err == nil
 		return err
 	})
-	if err != nil || !applied || disconnect {
-		return nil, err
+	if err != nil || !applied {
+		return nil, false, err
 	}
-	return block, nil
+	return block, false, nil
 }
