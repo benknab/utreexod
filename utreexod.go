@@ -466,6 +466,10 @@ func warnMultipleDBs() {
 // databases which consume space on the file system and ensuring the regression
 // test database is clean when in regression test mode.
 func loadBlockDB() (database.DB, error) {
+	options, err := cfg.levelDBOptions()
+	if err != nil {
+		return nil, err
+	}
 	// The memdb backend does not have a file path associated with it, so
 	// handle it uniquely.  We also don't want to worry about the multiple
 	// database type warnings when running with the memory database.
@@ -482,13 +486,17 @@ func loadBlockDB() (database.DB, error) {
 
 	// The database name is based on the database type.
 	dbPath := blockDbPath(cfg.DbType)
+	dbArgs := []interface{}{dbPath, activeNetParams.Net}
+	if cfg.DbType == "ffldb" {
+		dbArgs = append(dbArgs, options)
+	}
 
 	// The regression test is special in that it needs a clean database for
 	// each run, so remove it now if it already exists.
 	removeRegressionDB(dbPath)
 
 	btcdLog.Infof("Loading block database from '%s'", dbPath)
-	db, err := database.Open(cfg.DbType, dbPath, activeNetParams.Net)
+	db, err := database.Open(cfg.DbType, dbArgs...)
 	if err != nil {
 		// Return the error if it's not because the database doesn't
 		// exist.
@@ -503,7 +511,7 @@ func loadBlockDB() (database.DB, error) {
 		if err != nil {
 			return nil, err
 		}
-		db, err = database.Create(cfg.DbType, dbPath, activeNetParams.Net)
+		db, err = database.Create(cfg.DbType, dbArgs...)
 		if err != nil {
 			return nil, err
 		}

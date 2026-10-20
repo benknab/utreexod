@@ -25,5 +25,10 @@ database path as a string and the block network:
 	if err != nil {
 		// Handle error
 	}
+
+An optional third argument of type ffldb.Options sets the metadata read cache
+capacity in bytes and the open table file cache capacity. Zero values preserve
+LevelDB defaults. Cache settings can change when reopening an existing database;
+they do not change its format or require rebuilding indexes.
 */
 package ffldb

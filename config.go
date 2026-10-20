@@ -27,7 +27,6 @@ import (
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/connmgr"
 	"github.com/utreexo/utreexod/database"
-	_ "github.com/utreexo/utreexod/database/ffldb"
 	"github.com/utreexo/utreexod/mempool"
 	"github.com/utreexo/utreexod/peer"
 )
@@ -105,6 +104,8 @@ type config struct {
 	ConfigFile          string `short:"C" long:"configfile" description:"Path to configuration file"`
 	DebugLevel          string `short:"d" long:"debuglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical} -- You may also specify <subsystem>=<level>,<subsystem2>=<level>,... to set the log level for individual subsystems -- Use show to list available subsystems"`
 	DbType              string `long:"dbtype" description:"Database backend to use for the Block Chain"`
+	LevelDBCacheSizeMiB int    `long:"leveldbcachemaxsize" description:"LevelDB metadata read cache in MiB (ffldb only; 0 uses the default of 8 MiB)"`
+	LevelDBOpenFiles    int    `long:"leveldbopenfiles" description:"LevelDB metadata open table file cache capacity (ffldb only; 0 uses the platform default, 500 on Linux)"`
 	SigCacheMaxSize     uint   `long:"sigcachemaxsize" description:"The maximum number of entries in the signature verification cache"`
 	UtxoCacheMaxSizeMiB uint   `long:"utxocachemaxsize" description:"The maximum size in MiB of the UTXO cache"`
 	NoUtreexo           bool   `long:"noutreexo" description:"Disable utreexo compact state during block validation"`
@@ -718,6 +719,13 @@ func loadConfig() (*config, []string, error) {
 		str := "%s: The specified database type [%v] is invalid -- " +
 			"supported types %v"
 		err := fmt.Errorf(str, funcName, cfg.DbType, knownDbTypes)
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, usageMessage)
+		return nil, nil, err
+	}
+
+	if _, err := cfg.levelDBOptions(); err != nil {
+		err := fmt.Errorf("%s: %v", funcName, err)
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr, usageMessage)
 		return nil, nil, err

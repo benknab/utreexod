@@ -10,6 +10,39 @@ remain available. Use `getaddrindexinfo` to check progress. See
 [Background address indexing](background-address-index.md) for readiness,
 restart, and error behavior.
 
+## LevelDB metadata caches
+
+With `--dbtype=ffldb` (the default), set the metadata caches at launch:
+
+```sh
+utreexod --leveldbcachemaxsize=1024 --leveldbopenfiles=4096
+```
+
+This sets a **1 GiB read cache** and caches up to **4,096 open table files**.
+Add the same flags to your Docker Compose service's existing command, or add
+these entries to `utreexod.conf`:
+
+```ini
+leveldbcachemaxsize=1024
+leveldbopenfiles=4096
+```
+
+Both settings default to `0`, which preserves LevelDB's defaults: an 8 MiB read
+cache and a platform-specific open-file cache (500 files on Linux). Negative
+values are rejected. The read cache value must fit in an `int` after conversion
+from MiB to bytes. Nonzero overrides require the `ffldb` backend.
+
+These caches serve all LevelDB metadata, including address-index entries. They
+are separate from `--utxocachemaxsize` and `--utreexoproofindexmaxmemory`. Larger
+values can use more memory and file descriptors. They do not limit total process
+memory or change the database write buffer, table size, or FFldb write cache.
+
+Stop the node cleanly and restart it to apply changes. The database format stays
+the same, and saved indexing progress is retained. The database startup log shows
+the effective cache capacities. Future adjustments require a restart, not a new
+build. Measure throughput on your workload; larger caches do not guarantee a
+specific speedup.
+
 ## Peer server listen interface
 
 btcd allows you to bind to specific interfaces which enables you to setup

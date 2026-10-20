@@ -18,7 +18,7 @@ import (
 // the transaction's treap and allocating whole-transaction KV slices.
 func TestLargeTransactionBypassesCache(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
-	idb, err := openDB(path, blockDataNet, true)
+	idb, err := openDB(path, blockDataNet, true, Options{})
 	require.NoError(t, err)
 	t.Cleanup(func() { idb.Close() })
 	d := idb.(*db)
@@ -48,7 +48,7 @@ func TestLargeTransactionBypassesCache(t *testing.T) {
 	}
 	require.NoError(t, idb.View(check))
 	require.NoError(t, idb.Close())
-	idb, err = openDB(path, blockDataNet, false)
+	idb, err = openDB(path, blockDataNet, false, Options{})
 	require.NoError(t, err)
 	require.NoError(t, idb.View(check))
 }
@@ -71,7 +71,7 @@ func TestCacheBudgetIncludesPendingDeletes(t *testing.T) {
 // on commit, while readers keep their original snapshot.
 func TestMetadataSpillTransactionAtomicity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "db")
-	idb, err := openDB(path, blockDataNet, true)
+	idb, err := openDB(path, blockDataNet, true, Options{})
 	require.NoError(t, err)
 	t.Cleanup(func() { idb.Close() })
 	d := idb.(*db)
@@ -114,7 +114,7 @@ func TestMetadataSpillTransactionAtomicity(t *testing.T) {
 	require.Equal(t, []byte("old"), got)
 	snapshot.Release()
 	require.NoError(t, idb.Close())
-	idb, err = openDB(path, blockDataNet, false)
+	idb, err = openDB(path, blockDataNet, false, Options{})
 	require.NoError(t, err)
 	d = idb.(*db)
 	got, err = d.cache.ldb.Get(key, nil)
