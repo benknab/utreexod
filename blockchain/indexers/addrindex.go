@@ -625,6 +625,7 @@ type AddrIndex struct {
 	unconfirmedLock sync.RWMutex
 	txnsByAddr      map[[addrKeySize]byte]map[chainhash.Hash]*btcutil.Tx
 	addrsByTx       map[chainhash.Hash]map[[addrKeySize]byte]struct{}
+	background      *BackgroundAddrIndex
 }
 
 // Ensure the AddrIndex type implements the Indexer interface.
@@ -770,6 +771,10 @@ func (idx *AddrIndex) ConnectBlock(dbTx database.Tx, block *btcutil.Block,
 	addrsToTxns := make(writeIndexData)
 	idx.indexBlock(addrsToTxns, block, stxos)
 
+	return connectAddrEntries(dbTx, blockID, txLocs, addrsToTxns)
+}
+
+func connectAddrEntries(dbTx database.Tx, blockID uint32, txLocs []wire.TxLoc, addrsToTxns writeIndexData) error {
 	// Add all of the index entries for each address.
 	addrIdxBucket := dbTx.Metadata().Bucket(addrIndexKey)
 	for addrKey, txIdxs := range addrsToTxns {
@@ -797,6 +802,10 @@ func (idx *AddrIndex) DisconnectBlock(dbTx database.Tx, block *btcutil.Block,
 	addrsToTxns := make(writeIndexData)
 	idx.indexBlock(addrsToTxns, block, stxos)
 
+	return disconnectAddrEntries(dbTx, addrsToTxns)
+}
+
+func disconnectAddrEntries(dbTx database.Tx, addrsToTxns writeIndexData) error {
 	// Remove all of the index entries for each address.
 	bucket := dbTx.Metadata().Bucket(addrIndexKey)
 	for addrKey, txIdxs := range addrsToTxns {
@@ -841,30 +850,19 @@ func (idx *AddrIndex) Flush(_ *chainhash.Hash, _ blockchain.FlushMode, _ bool) e
 func (idx *AddrIndex) TxRegionsForAddress(dbTx database.Tx, addr btcutil.Address,
 	numToSkip, numRequested uint32, reverse bool) ([]database.BlockRegion, uint32, error) {
 
+	if err := idx.CheckReady(dbTx); err != nil {
+		return nil, 0, err
+	}
 	addrKey, err := addrToKey(addr)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	var regions []database.BlockRegion
-	var skipped uint32
-	err = idx.db.View(func(dbTx database.Tx) error {
-		// Create closure to lookup the block hash given the ID using
-		// the database transaction.
-		fetchBlockHash := func(id []byte) (*chainhash.Hash, error) {
-			// Deserialize and populate the result.
-			return dbFetchBlockHashBySerializedID(dbTx, id)
-		}
-
-		var err error
-		addrIdxBucket := dbTx.Metadata().Bucket(addrIndexKey)
-		regions, skipped, err = dbFetchAddrIndexEntries(addrIdxBucket,
-			addrKey, numToSkip, numRequested, reverse,
-			fetchBlockHash)
-		return err
-	})
-
-	return regions, skipped, err
+	fetchBlockHash := func(id []byte) (*chainhash.Hash, error) {
+		return dbFetchBlockHashBySerializedID(dbTx, id)
+	}
+	return dbFetchAddrIndexEntries(dbTx.Metadata().Bucket(addrIndexKey),
+		addrKey, numToSkip, numRequested, reverse, fetchBlockHash)
 }
 
 // indexUnconfirmedAddresses modifies the unconfirmed (memory-only) address

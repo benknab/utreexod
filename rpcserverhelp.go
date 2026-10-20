@@ -17,6 +17,13 @@ import (
 // helpDescsEnUS defines the English descriptions used for the help strings.
 var helpDescsEnUS = map[string]string{
 	"getproofindexinfo--synopsis":          "Returns background proof-index progress independently of block validation.",
+	"getaddrindexinfo--synopsis":           "Returns background address-index progress independently of block validation.",
+	"addrindexinforesult-height":           "Last committed address-index height (-1 before genesis)",
+	"addrindexinforesult-bestblockhash":    "Hash of the address-index tip",
+	"addrindexinforesult-validatedheight":  "Current transaction-index and validated chain height",
+	"addrindexinforesult-synced":           "Whether the address index is available and matches the validated chain tip",
+	"addrindexinforesult-stopped":          "Whether the address-index worker has stopped",
+	"addrindexinforesult-error":            "Last worker error, if any; other node services remain available",
 	"setproofindexpaused--synopsis":        "Pauses or resumes the background proof index at the next block boundary and returns its status. The setting lasts until restart.",
 	"setproofindexpaused-paused":           "True to request a pause, false to resume",
 	"proofindexinforesult-height":          "Last fully proof-indexed height (-1 before genesis)",
@@ -932,6 +939,7 @@ var helpDescsEnUS = map[string]string{
 // pointer to the type (or nil to indicate no return value).
 var rpcResultTypes = map[string][]interface{}{
 	"getproofindexinfo":                  {(*btcjson.ProofIndexInfoResult)(nil)},
+	"getaddrindexinfo":                   {(*btcjson.AddrIndexInfoResult)(nil)},
 	"setproofindexpaused":                {(*btcjson.ProofIndexInfoResult)(nil)},
 	"addnode":                            nil,
 	"balance":                            {(*btcjson.BalanceResult)(nil)},

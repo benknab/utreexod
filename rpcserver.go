@@ -178,6 +178,7 @@ var rpcHandlersBeforeInit = map[string]commandHandler{
 	"getnodeaddresses":                   handleGetNodeAddresses,
 	"getpeerinfo":                        handleGetPeerInfo,
 	"getproofindexinfo":                  handleGetProofIndexInfo,
+	"getaddrindexinfo":                   handleGetAddrIndexInfo,
 	"getrawmempool":                      handleGetRawMempool,
 	"getrawtransaction":                  handleGetRawTransaction,
 	"gettxout":                           handleGetTxOut,
@@ -275,6 +276,7 @@ var rpcUnimplemented = map[string]struct{}{
 // Commands that are available to a limited user
 var rpcLimited = map[string]struct{}{
 	"getproofindexinfo": {},
+	"getaddrindexinfo":  {},
 	// Websockets commands
 	"loadtxfilter":          {},
 	"notifyblocks":          {},
@@ -3960,6 +3962,11 @@ func handleSearchRawTransactions(s *rpcServer, cmd interface{}, closeChan <-chan
 			Message: "Address index must be enabled (--addrindex)",
 		}
 	}
+	// Also gate count=0 and reverse queries satisfied entirely by the mempool.
+	// Database reads repeat this check in the snapshot holding their entries.
+	if err := s.cfg.DB.View(addrIndex.CheckReady); err != nil {
+		return nil, addressIndexRPCError(err)
+	}
 
 	// Override the flag for including extra previous output information in
 	// each input if needed.
@@ -4074,8 +4081,7 @@ func handleSearchRawTransactions(s *rpcServer, cmd interface{}, closeChan <-chan
 			return nil
 		})
 		if err != nil {
-			context := "Failed to load address index entries"
-			return nil, internalRPCError(err.Error(), context)
+			return nil, addressIndexRPCError(err)
 		}
 
 	}
@@ -5780,6 +5786,7 @@ type rpcserverConfig struct {
 	UtreexoProofIndex     *indexers.UtreexoProofIndex
 	FlatUtreexoProofIndex *indexers.FlatUtreexoProofIndex
 	BackgroundProofIndex  *indexers.BackgroundProofIndex
+	BackgroundAddrIndex   *indexers.BackgroundAddrIndex
 
 	// The fee estimator keeps track of how long transactions are left in
 	// the mempool before they are mined into blocks.

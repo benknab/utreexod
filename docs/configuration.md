@@ -3,6 +3,13 @@
 btcd has a number of [configuration](https://pkg.go.dev/github.com/btcsuite/btcd)
 options, which can be viewed by running: `$ btcd --help`.
 
+## Address history
+
+`--addrindex` builds address history in the background while other node services
+remain available. Use `getaddrindexinfo` to check progress. See
+[Background address indexing](background-address-index.md) for readiness,
+restart, and error behavior.
+
 ## Peer server listen interface
 
 btcd allows you to bind to specific interfaces which enables you to setup

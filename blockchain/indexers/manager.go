@@ -860,7 +860,10 @@ func (m *Manager) Flush(bestHash *chainhash.Hash, mode blockchain.FlushMode, onC
 func NewManager(db database.DB, enabledIndexes []Indexer) *Manager {
 	foreground := make([]Indexer, 0, len(enabledIndexes))
 	for _, index := range enabledIndexes {
-		if _, background := index.(*BackgroundProofIndex); !background {
+		switch index.(type) {
+		case *BackgroundProofIndex, *BackgroundAddrIndex:
+			// Background workers initialize here but own their replay loops.
+		default:
 			foreground = append(foreground, index)
 		}
 	}

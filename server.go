@@ -258,6 +258,7 @@ type server struct {
 	utreexoProofIndex     *indexers.UtreexoProofIndex
 	flatUtreexoProofIndex *indexers.FlatUtreexoProofIndex
 	backgroundProofIndex  *indexers.BackgroundProofIndex
+	backgroundAddrIndex   *indexers.BackgroundAddrIndex
 
 	// The fee estimator keeps track of how long transactions are left in
 	// the mempool before they are mined into blocks.
@@ -3132,6 +3133,9 @@ func (s *server) Start() {
 	if s.backgroundProofIndex != nil {
 		s.backgroundProofIndex.Start()
 	}
+	if s.backgroundAddrIndex != nil {
+		s.backgroundAddrIndex.Start()
+	}
 
 	// Start the peer handler which in turn starts the address and block
 	// managers.
@@ -3182,6 +3186,11 @@ func (s *server) Stop() error {
 	// Shutdown the RPC server if it's not disabled.
 	if !cfg.DisableRPC {
 		s.rpcServer.Stop()
+	}
+	if s.backgroundAddrIndex != nil {
+		if err := s.backgroundAddrIndex.Stop(); err != nil {
+			srvrLog.Errorf("Address index stopped with an error: %v", err)
+		}
 	}
 
 	// Stop the watch only wallet if it's enabled.
@@ -3478,10 +3487,8 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 
 	// Create the transaction and address indexes if needed.
 	//
-	// CAUTION: the txindex needs to be first in the indexes array because
-	// the addrindex uses data from the txindex during catchup.  If the
-	// addrindex is run first, it may not have the transactions from the
-	// current block indexed.
+	// The transaction index initializes and catches up before services start.
+	// The address worker then follows its committed tip independently.
 	var indexes []indexers.Indexer
 	if cfg.TxIndex || cfg.AddrIndex {
 		// Enable transaction index if address index is enabled since it
@@ -3498,9 +3505,10 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		indexes = append(indexes, s.txIndex)
 	}
 	if cfg.AddrIndex {
-		indxLog.Info("Address index is enabled")
+		indxLog.Info("Background address index is enabled")
 		s.addrIndex = indexers.NewAddrIndex(db, chainParams)
-		indexes = append(indexes, s.addrIndex)
+		s.backgroundAddrIndex = indexers.NewBackgroundAddrIndex(s.addrIndex)
+		indexes = append(indexes, s.backgroundAddrIndex)
 	}
 	if cfg.CFilters {
 		indxLog.Info("Committed filter index is enabled")
@@ -3896,6 +3904,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 			UtreexoProofIndex:     s.utreexoProofIndex,
 			FlatUtreexoProofIndex: s.flatUtreexoProofIndex,
 			BackgroundProofIndex:  s.backgroundProofIndex,
+			BackgroundAddrIndex:   s.backgroundAddrIndex,
 			FeeEstimator:          s.feeEstimator,
 			WatchOnlyWallet:       s.watchOnlyWallet,
 			BDKWallet:             s.bdkWallet,

@@ -197,7 +197,7 @@ type config struct {
 	BlockPrioritySize uint32   `long:"blockprioritysize" description:"Size in bytes for high-priority/low-fee transactions when creating a block"`
 
 	// Indexing options.
-	AddrIndex                  bool          `long:"addrindex" description:"Maintain a full address-based transaction index which makes the searchrawtransactions RPC available"`
+	AddrIndex                  bool          `long:"addrindex" description:"Maintain an address-based transaction index in the background; searchrawtransactions is available when caught up"`
 	TxIndex                    bool          `long:"txindex" description:"Maintain a full hash-based transaction index which makes all transactions available via the getrawtransaction RPC"`
 	V2Transport                bool          `long:"v2transport" description:"Enable P2P v2 encrypted transport protocol (BIP324) (default: false)"`
 	UtreexoProofIndex          bool          `long:"utreexoproofindex" description:"Maintain a utreexo proof for all blocks"`
