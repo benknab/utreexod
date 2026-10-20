@@ -141,10 +141,6 @@ var (
 //   Total: 12 bytes per indexed tx
 // -----------------------------------------------------------------------------
 
-// fetchBlockHashFunc defines a callback function to use in order to convert a
-// serialized block ID to an associated block hash.
-type fetchBlockHashFunc func(serializedID []byte) (*chainhash.Hash, error)
-
 // serializeAddrIndexEntry serializes the provided block id and transaction
 // location according to the format described in detail above.
 func serializeAddrIndexEntry(blockID uint32, txLoc wire.TxLoc) []byte {
@@ -157,18 +153,16 @@ func serializeAddrIndexEntry(blockID uint32, txLoc wire.TxLoc) []byte {
 }
 
 // deserializeAddrIndexEntry decodes the passed serialized byte slice into the
-// provided region struct according to the format described in detail above and
-// uses the passed block hash fetching function in order to conver the block ID
-// to the associated block hash.
-func deserializeAddrIndexEntry(serialized []byte, region *database.BlockRegion,
-	fetchBlockHash fetchBlockHashFunc) error {
+// provided region struct. Block IDs are resolved in the same database snapshot
+// that supplied the serialized entry.
+func deserializeAddrIndexEntry(dbTx database.Tx, serialized []byte, region *database.BlockRegion) error {
 
 	// Ensure there are enough bytes to decode.
 	if len(serialized) < txEntrySize {
 		return errDeserialize("unexpected end of data")
 	}
 
-	hash, err := fetchBlockHash(serialized[0:4])
+	hash, err := dbFetchBlockHashBySerializedID(dbTx, serialized[0:4])
 	if err != nil {
 		return err
 	}
@@ -262,10 +256,10 @@ func dbPutAddrIndexEntry(bucket internalBucket, addrKey [addrKeySize]byte,
 // the given address key and the number of entries skipped since it could have
 // been less in the case where there are less total entries than the requested
 // number of entries to skip.
-func dbFetchAddrIndexEntries(bucket internalBucket, addrKey [addrKeySize]byte,
-	numToSkip, numRequested uint32, reverse bool,
-	fetchBlockHash fetchBlockHashFunc) ([]database.BlockRegion, uint32, error) {
+func dbFetchAddrIndexEntries(dbTx database.Tx, addrKey [addrKeySize]byte,
+	numToSkip, numRequested uint32, reverse bool) ([]database.BlockRegion, uint32, error) {
 
+	bucket := dbTx.Metadata().Bucket(addrIndexKey)
 	// When the reverse flag is not set, all levels need to be fetched
 	// because numToSkip and numRequested are counted from the oldest
 	// transactions (highest level) and thus the total count is needed.
@@ -322,8 +316,7 @@ func dbFetchAddrIndexEntries(bucket internalBucket, addrKey [addrKeySize]byte,
 		}
 
 		// Deserialize and populate the result.
-		err := deserializeAddrIndexEntry(serialized[offset:],
-			&results[i], fetchBlockHash)
+		err := deserializeAddrIndexEntry(dbTx, serialized[offset:], &results[i])
 		if err != nil {
 			// Ensure any deserialization errors are returned as
 			// database corruption errors.
@@ -714,12 +707,11 @@ func (idx *AddrIndex) indexPkScript(data writeIndexData, pkScript []byte, txIdx 
 	}
 }
 
-// indexBlock extract all of the standard addresses from all of the transactions
-// in the passed block and maps each of them to the associated transaction using
-// the passed map.
-func (idx *AddrIndex) indexBlock(data writeIndexData, block *btcutil.Block,
-	stxos []blockchain.SpentTxOut) {
+// indexBlock maps each standard address in the block's inputs and outputs to
+// the transactions that reference it.
+func (idx *AddrIndex) indexBlock(block *btcutil.Block, stxos []blockchain.SpentTxOut) writeIndexData {
 
+	data := make(writeIndexData)
 	stxoIndex := 0
 	for txIdx, tx := range block.Transactions() {
 		// Coinbases do not reference any inputs.  Since the block is
@@ -744,6 +736,7 @@ func (idx *AddrIndex) indexBlock(data writeIndexData, block *btcutil.Block,
 			idx.indexPkScript(data, txOut.PkScript, txIdx)
 		}
 	}
+	return data
 }
 
 // ConnectBlock is invoked by the index manager when a new block has been
@@ -767,11 +760,7 @@ func (idx *AddrIndex) ConnectBlock(dbTx database.Tx, block *btcutil.Block,
 		return err
 	}
 
-	// Build all of the address to transaction mappings in a local map.
-	addrsToTxns := make(writeIndexData)
-	idx.indexBlock(addrsToTxns, block, stxos)
-
-	return connectAddrEntries(dbTx, blockID, txLocs, addrsToTxns)
+	return connectAddrEntries(dbTx, blockID, txLocs, idx.indexBlock(block, stxos))
 }
 
 func connectAddrEntries(dbTx database.Tx, blockID uint32, txLocs []wire.TxLoc, addrsToTxns writeIndexData) error {
@@ -798,11 +787,7 @@ func connectAddrEntries(dbTx database.Tx, blockID uint32, txLocs []wire.TxLoc, a
 func (idx *AddrIndex) DisconnectBlock(dbTx database.Tx, block *btcutil.Block,
 	stxos []blockchain.SpentTxOut) error {
 
-	// Build all of the address to transaction mappings in a local map.
-	addrsToTxns := make(writeIndexData)
-	idx.indexBlock(addrsToTxns, block, stxos)
-
-	return disconnectAddrEntries(dbTx, addrsToTxns)
+	return disconnectAddrEntries(dbTx, idx.indexBlock(block, stxos))
 }
 
 func disconnectAddrEntries(dbTx database.Tx, addrsToTxns writeIndexData) error {
@@ -858,11 +843,7 @@ func (idx *AddrIndex) TxRegionsForAddress(dbTx database.Tx, addr btcutil.Address
 		return nil, 0, err
 	}
 
-	fetchBlockHash := func(id []byte) (*chainhash.Hash, error) {
-		return dbFetchBlockHashBySerializedID(dbTx, id)
-	}
-	return dbFetchAddrIndexEntries(dbTx.Metadata().Bucket(addrIndexKey),
-		addrKey, numToSkip, numRequested, reverse, fetchBlockHash)
+	return dbFetchAddrIndexEntries(dbTx, addrKey, numToSkip, numRequested, reverse)
 }
 
 // indexUnconfirmedAddresses modifies the unconfirmed (memory-only) address

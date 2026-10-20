@@ -28,8 +28,7 @@ type AddrIndexStatus struct {
 }
 
 type addrWorkerState struct {
-	stopped bool
-	err     error
+	err error
 }
 
 // BackgroundAddrIndex reuses the address index's database format. Each block's
@@ -42,12 +41,11 @@ type BackgroundAddrIndex struct {
 	stop  sync.Once
 	quit  chan struct{}
 	done  chan struct{}
-	state atomic.Pointer[addrWorkerState]
+	state atomic.Pointer[addrWorkerState] // nil until the worker stops
 }
 
 func NewBackgroundAddrIndex(index *AddrIndex) *BackgroundAddrIndex {
 	b := &BackgroundAddrIndex{AddrIndex: index, quit: make(chan struct{}), done: make(chan struct{})}
-	b.state.Store(&addrWorkerState{})
 	index.background = b
 	return b
 }
@@ -92,10 +90,10 @@ func (b *BackgroundAddrIndex) snapshot(tx database.Tx) (AddrIndexStatus, error) 
 	state := b.state.Load()
 	status := AddrIndexStatus{
 		Height: height, BestBlockHash: hash.String(), ValidatedHeight: targetHeight,
-		Stopped: state.stopped,
-		Synced:  !state.stopped && state.err == nil && height >= 0 && height == targetHeight && *hash == *target,
+		Stopped: state != nil,
+		Synced:  state == nil && height >= 0 && height == targetHeight && *hash == *target,
 	}
-	if state.err != nil {
+	if state != nil && state.err != nil {
 		status.LastError = state.err.Error()
 	}
 	return status, nil
@@ -120,7 +118,7 @@ func (idx *AddrIndex) CheckReady(tx database.Tx) error {
 
 func (b *BackgroundAddrIndex) run() {
 	err := b.process()
-	b.state.Store(&addrWorkerState{stopped: true, err: err})
+	b.state.Store(&addrWorkerState{err: err})
 	if err != nil {
 		log.Errorf("Background address indexing stopped: %v", err)
 	}
@@ -196,8 +194,7 @@ func (b *BackgroundAddrIndex) step() (block *btcutil.Block, idle bool, err error
 	if err != nil {
 		return nil, false, err
 	}
-	data := make(writeIndexData)
-	b.indexBlock(data, block, stxos)
+	data := b.indexBlock(block, stxos)
 	txLocs, err := block.TxLoc()
 	if err != nil {
 		return nil, false, err
