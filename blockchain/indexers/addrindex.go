@@ -5,8 +5,10 @@
 package indexers
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/utreexo/utreexod/blockchain"
@@ -754,10 +756,16 @@ func (idx *AddrIndex) ConnectBlock(dbTx database.Tx, block *btcutil.Block,
 }
 
 func connectAddrEntries(dbTx database.Tx, blockID uint32, txLocs []wire.TxLoc, addrsToTxns writeIndexData) error {
-	// Add all of the index entries for each address.
+	// Group reads of nearby address keys. Different addresses are independent;
+	// the transaction order within each address must remain unchanged.
+	keys := make([][addrKeySize]byte, 0, len(addrsToTxns))
+	for key := range addrsToTxns {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b [addrKeySize]byte) int { return bytes.Compare(a[:], b[:]) })
 	addrIdxBucket := dbTx.Metadata().Bucket(addrIndexKey)
-	for addrKey, txIdxs := range addrsToTxns {
-		for _, txIdx := range txIdxs {
+	for _, addrKey := range keys {
+		for _, txIdx := range addrsToTxns[addrKey] {
 			err := dbPutAddrIndexEntry(addrIdxBucket, addrKey,
 				blockID, txLocs[txIdx])
 			if err != nil {
