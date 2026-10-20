@@ -141,17 +141,6 @@ var (
 //   Total: 12 bytes per indexed tx
 // -----------------------------------------------------------------------------
 
-// serializeAddrIndexEntry serializes the provided block id and transaction
-// location according to the format described in detail above.
-func serializeAddrIndexEntry(blockID uint32, txLoc wire.TxLoc) []byte {
-	// Serialize the entry.
-	serialized := make([]byte, 12)
-	byteOrder.PutUint32(serialized, blockID)
-	byteOrder.PutUint32(serialized[4:], uint32(txLoc.TxStart))
-	byteOrder.PutUint32(serialized[8:], uint32(txLoc.TxLen))
-	return serialized
-}
-
 // deserializeAddrIndexEntry decodes the passed serialized byte slice into the
 // provided region struct. Block IDs are resolved in the same database snapshot
 // that supplied the serialized entry.
@@ -192,7 +181,8 @@ func dbPutAddrIndexEntry(bucket internalBucket, addrKey [addrKeySize]byte,
 
 	// Simply append the new entry to level 0 and return now when it will
 	// fit.  This is the most common path.
-	newData := serializeAddrIndexEntry(blockID, txLoc)
+	newData := make([]byte, txEntrySize)
+	putTxIndexEntry(newData, blockID, txLoc)
 	level0Key := keyForLevel(addrKey, 0)
 	level0Data := bucket.Get(level0Key[:])
 	if len(level0Data)+len(newData) <= maxLevelBytes {

@@ -296,12 +296,15 @@ func TestBackgroundAddrRechecksPreparedBranch(t *testing.T) {
 			b1, out1 := f.add(btcutil.NewBlock(f.params.GenesisBlock), nil)
 			b2, out2 := f.add(b1, out1)
 			b3, out3 := f.add(b2, out2)
-			var before func()
-			if disconnect {
-				f.catchUp()
+			// Replace b2's branch before the prepared connect acquires the writer.
+			before := func() {
 				alt2, altOut := f.add(b1, out1)
 				alt3, altOut := f.add(alt2, altOut)
 				f.add(alt3, altOut)
+			}
+			if disconnect {
+				f.catchUp()
+				before()
 				// The worker prepares an undo of b3. Before its commit, the
 				// original branch wins again, so the undo must be discarded.
 				before = func() {
@@ -312,13 +315,6 @@ func TestBackgroundAddrRechecksPreparedBranch(t *testing.T) {
 				for i := 0; i < 2; i++ {
 					_, _, err := f.worker.step() // Genesis and b1.
 					require.NoError(t, err)
-				}
-				// The worker prepares b2 while it is canonical. Validation
-				// replaces that branch before the worker acquires the writer.
-				before = func() {
-					alt2, altOut := f.add(b1, out1)
-					alt3, altOut := f.add(alt2, altOut)
-					f.add(alt3, altOut)
 				}
 			}
 			initial := f.status()
