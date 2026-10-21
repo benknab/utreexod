@@ -7,7 +7,7 @@ package blockchain
 import (
 	"testing"
 
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/chainhash/v2"
 )
 
 // TestThresholdStateStringer tests the stringized output for the
@@ -173,6 +173,10 @@ func (c customDeploymentChecker) IsSpeedy() bool {
 
 func (c customDeploymentChecker) Condition(_ *blockNode) (bool, error) {
 	return c.conditionTrue, nil
+}
+
+func (c customDeploymentChecker) ForceActive(_ *blockNode) bool {
+	return false
 }
 
 // TestThresholdStateTransition tests that the thresholdStateTransition

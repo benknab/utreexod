@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 type proofWorkerFixture struct {
@@ -125,6 +125,9 @@ func (f *proofWorkerFixture) reopenDatabase() {
 }
 
 func (f *proofWorkerFixture) add(prev *btcutil.Block, spends []*blockchain.SpendableOut) (*btcutil.Block, []*blockchain.SpendableOut) {
+	if *prev.Hash() == *f.params.GenesisHash {
+		prev.SetHeight(0)
+	}
 	block, outs, err := blockchain.AddBlock(f.chain, prev, spends)
 	require.NoError(f.t, err)
 	return block, outs

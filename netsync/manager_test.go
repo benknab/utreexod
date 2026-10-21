@@ -12,19 +12,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/blockchain/indexers"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
 	_ "github.com/utreexo/utreexod/database/ffldb"
 	"github.com/utreexo/utreexod/mempool"
 	"github.com/utreexo/utreexod/peer"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // The package-level log variable is nil by default. Set it to the
@@ -313,9 +314,9 @@ func TestQueuedUtreexoTTLs(t *testing.T) {
 
 			// Test setup: request a block whose verified TTL is already queued.
 			block := generateTestBlocks(t, &params, 1)[0]
-			ttl := wire.UtreexoTTL{
+			ttl := bip183.UtreexoTTL{
 				BlockHeight: 1,
-				TTLs:        make([]wire.TTLInfo, len(blockchain.ExtractAccumulatorAdds(block))),
+				TTLs:        make([]bip183.TTLInfo, len(blockchain.ExtractAccumulatorAdds(block))),
 			}
 			sm.queuedTTLs[1] = ttl
 			headers := wire.NewMsgHeaders()
@@ -324,7 +325,7 @@ func TestQueuedUtreexoTTLs(t *testing.T) {
 			require.Contains(t, sm.peerStates[p].requestedBlocks, *block.Hash())
 			proof := &utreexoProofMsg{
 				peer:  p,
-				proof: &wire.MsgUtreexoProof{BlockHash: *block.Hash()},
+				proof: &bip183.MsgUtreexoProof{BlockHash: *block.Hash()},
 			}
 
 			// Test: an invalid block body must leave the TTL available for retry.
@@ -401,7 +402,7 @@ func TestIsInHeadersFirstMode(t *testing.T) {
 					requestedBlocks:           make(map[chainhash.Hash]struct{}),
 					requestedUtreexoSummaries: make(map[chainhash.Hash]struct{}),
 					requestedUtreexoProofs:    make(map[chainhash.Hash]struct{}),
-					requestedUtreexoTTLs:      make(map[wire.MsgGetUtreexoTTLs]struct{}),
+					requestedUtreexoTTLs:      make(map[bip183.MsgGetUtreexoTTLs]struct{}),
 				}
 				return ps
 			}(),
@@ -422,7 +423,7 @@ func TestIsInHeadersFirstMode(t *testing.T) {
 					requestedBlocks:           make(map[chainhash.Hash]struct{}),
 					requestedUtreexoSummaries: make(map[chainhash.Hash]struct{}),
 					requestedUtreexoProofs:    make(map[chainhash.Hash]struct{}),
-					requestedUtreexoTTLs:      make(map[wire.MsgGetUtreexoTTLs]struct{}),
+					requestedUtreexoTTLs:      make(map[bip183.MsgGetUtreexoTTLs]struct{}),
 				}
 				return ps
 			}(),
@@ -447,7 +448,7 @@ func TestIsInHeadersFirstMode(t *testing.T) {
 					requestedBlocks:           make(map[chainhash.Hash]struct{}),
 					requestedUtreexoSummaries: make(map[chainhash.Hash]struct{}),
 					requestedUtreexoProofs:    make(map[chainhash.Hash]struct{}),
-					requestedUtreexoTTLs:      make(map[wire.MsgGetUtreexoTTLs]struct{}),
+					requestedUtreexoTTLs:      make(map[bip183.MsgGetUtreexoTTLs]struct{}),
 				}
 				return ps
 			}(),
@@ -474,7 +475,7 @@ func TestIsInHeadersFirstMode(t *testing.T) {
 					requestedBlocks:           make(map[chainhash.Hash]struct{}),
 					requestedUtreexoSummaries: make(map[chainhash.Hash]struct{}),
 					requestedUtreexoProofs:    make(map[chainhash.Hash]struct{}),
-					requestedUtreexoTTLs:      make(map[wire.MsgGetUtreexoTTLs]struct{}),
+					requestedUtreexoTTLs:      make(map[bip183.MsgGetUtreexoTTLs]struct{}),
 				}
 				return ps
 			}(),
@@ -534,11 +535,15 @@ func TestIsInHeadersFirstMode(t *testing.T) {
 func createTestCoinbase(height int32, params *chaincfg.Params) *wire.MsgTx {
 	tx := wire.NewMsgTx(wire.TxVersion)
 
-	// Push the height as data to guarantee unique txids per block.
-	sigScript := []byte{
-		0x04,
-		byte(height), byte(height >> 8),
-		byte(height >> 16), byte(height >> 24),
+	// Encode the height as a minimally encoded script integer and add a trailing
+	// OP_0 so the script also satisfies the generic coinbase-length checks.
+	sigScript, err := txscript.NewScriptBuilder().
+		AddInt64(int64(height)).
+		AddInt64(0).
+		Script()
+	if err != nil {
+		panic(fmt.Sprintf("unable to encode coinbase height %d: %v",
+			height, err))
 	}
 
 	tx.AddTxIn(&wire.TxIn{
@@ -590,7 +595,8 @@ func generateTestBlocks(
 		merkleRoot := cb.TxHash()
 
 		header := wire.BlockHeader{
-			Version:    1,
+			// Regtest enforces the BIP34/65/66 version floor from height 1.
+			Version:    4,
 			PrevBlock:  *prevHash,
 			MerkleRoot: merkleRoot,
 			Timestamp:  prevTime.Add(time.Minute),
@@ -722,6 +728,10 @@ func TestSyncStateMachine(t *testing.T) {
 			params := chaincfg.RegressionNetParams
 			params.Checkpoints = nil
 
+			// The test peers don't negotiate witness support,
+			// which startSync requires once segwit is active.
+			params.Deployments[chaincfg.DeploymentSegwit].AlwaysActiveHeight = 0
+
 			sm, tearDown := makeMockSyncManager(t, &params)
 			defer tearDown()
 
@@ -796,7 +806,7 @@ func newSyncCandidate(t *testing.T, sm *SyncManager,
 		requestedBlocks:           make(map[chainhash.Hash]struct{}),
 		requestedUtreexoSummaries: make(map[chainhash.Hash]struct{}),
 		requestedUtreexoProofs:    make(map[chainhash.Hash]struct{}),
-		requestedUtreexoTTLs:      make(map[wire.MsgGetUtreexoTTLs]struct{}),
+		requestedUtreexoTTLs:      make(map[bip183.MsgGetUtreexoTTLs]struct{}),
 	}
 	return p
 }
@@ -1088,6 +1098,10 @@ func TestStartSyncBlockFallback(t *testing.T) {
 	params := chaincfg.RegressionNetParams
 	params.Checkpoints = nil
 
+	// The test peers don't negotiate witness support,
+	// which startSync requires once segwit is active.
+	params.Deployments[chaincfg.DeploymentSegwit].AlwaysActiveHeight = 0
+
 	sm, tearDown := makeMockSyncManager(t, &params)
 	defer tearDown()
 
@@ -1110,7 +1124,7 @@ func TestStartSyncBlockFallback(t *testing.T) {
 		requestedBlocks:           make(map[chainhash.Hash]struct{}),
 		requestedUtreexoSummaries: make(map[chainhash.Hash]struct{}),
 		requestedUtreexoProofs:    make(map[chainhash.Hash]struct{}),
-		requestedUtreexoTTLs:      make(map[wire.MsgGetUtreexoTTLs]struct{}),
+		requestedUtreexoTTLs:      make(map[bip183.MsgGetUtreexoTTLs]struct{}),
 	}
 
 	sm.startSync()
@@ -1247,7 +1261,8 @@ func TestStartSyncChainCurrent(t *testing.T) {
 	// IsCurrent() returns true.
 	cb := createTestCoinbase(1, &params)
 	header := wire.BlockHeader{
-		Version:    1,
+		// Regtest enforces the BIP34/65/66 version floor from height 1.
+		Version:    4,
 		PrevBlock:  *params.GenesisHash,
 		MerkleRoot: cb.TxHash(),
 		Timestamp:  time.Now().Truncate(time.Second),
@@ -1378,11 +1393,15 @@ func TestBlockConnectedCleansMempool(t *testing.T) {
 		[]*btcutil.Tx{btcutil.NewTx(cb), btcutil.NewTx(blockSpend)},
 		false,
 	)
+	// Segwit is active on regtest, so the spend is checked with the witness
+	// flag, which needs BIP0016.  BIP0016 only applies to blocks with a
+	// timestamp at or after txscript.Bip16Activation.
 	header := wire.BlockHeader{
-		Version:    1,
+		// Regtest enforces the BIP34/65/66 version floor from height 1.
+		Version:    4,
 		PrevBlock:  snap.Hash,
 		MerkleRoot: merkleRoot,
-		Timestamp:  blocks[len(blocks)-1].MsgBlock().Header.Timestamp.Add(time.Minute),
+		Timestamp:  time.Now().Truncate(time.Second),
 		Bits:       params.PowLimitBits,
 	}
 	require.True(t, solveTestBlock(&header, &params))

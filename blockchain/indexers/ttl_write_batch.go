@@ -5,13 +5,13 @@ import (
 	"math/bits"
 	"slices"
 
-	"github.com/utreexo/utreexod/wire"
+	"github.com/utreexo/utreexod/bip182"
 )
 
 // ttlWriteBatchSize uses a small source-height sketch to avoid paying for a
 // larger sort when writes are widely scattered. Collisions can only choose a
 // larger bounded batch; they never affect record validation or write contents.
-func ttlWriteBatchSize(lds []wire.LeafData) int {
+func ttlWriteBatchSize(lds []bip182.LeafData) int {
 	var sources [4]uint64
 	for _, ld := range lds[:min(1024, len(lds))] {
 		slot := (uint32(ld.Height) * 0x9e3779b9) >> 24

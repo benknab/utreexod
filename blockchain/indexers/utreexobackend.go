@@ -12,12 +12,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/blockchain"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
-	"github.com/utreexo/utreexod/wire"
+	"github.com/utreexo/utreexod/utreexoparams"
 )
 
 const (
@@ -284,7 +285,7 @@ func (idx *FlatUtreexoProofIndex) CloseUtreexoState() error {
 // serializeUndoBlock serializes all the data that's needed for undoing a full utreexo state
 // into a slice of bytes.
 func serializeUndoBlock(proof *utreexo.Proof, delHashes []utreexo.Hash) ([]byte, error) {
-	proofSize := wire.BatchProofSerializeSize(proof)
+	proofSize := bip183.BatchProofSerializeSize(proof)
 	delHashesCountSize := 4
 	delHashesSize := len(delHashes) * chainhash.HashSize
 
@@ -293,7 +294,7 @@ func serializeUndoBlock(proof *utreexo.Proof, delHashes []utreexo.Hash) ([]byte,
 	// Write the proof.
 	//
 	// Proofs are prefixed with the count in uint32.
-	err := wire.BatchProofSerialize(w, proof)
+	err := bip183.BatchProofSerialize(w, proof)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +323,7 @@ func serializeUndoBlock(proof *utreexo.Proof, delHashes []utreexo.Hash) ([]byte,
 func deserializeUndoBlock(serialized []byte) (*utreexo.Proof, []utreexo.Hash, error) {
 	r := bytes.NewReader(serialized)
 
-	proof, err := wire.BatchProofDeserialize(r)
+	proof, err := bip183.BatchProofDeserialize(r)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -409,7 +410,7 @@ func (us *UtreexoState) initConsistentUtreexoState(chain *blockchain.BlockChain,
 		}
 		adds := blockchain.BlockToAddLeaves(block, outskip, outCount)
 
-		ud, err := wire.GenerateUData(dels, us.state)
+		ud, err := bip183.GenerateUData(dels, us.state)
 		if err != nil {
 			return err
 		}
@@ -478,7 +479,7 @@ func openUtreexoState(cfg *UtreexoConfig) (*UtreexoState, *chainhash.Hash, error
 	// Presize the position map to the next power of 2 above the assume
 	// utreexo point's leaf count to avoid costly resizes during initial
 	// block download.
-	presizeLeaves := uint64(1) << bits.Len64(cfg.Params.AssumeUtreexoPoint.NumLeaves)
+	presizeLeaves := uint64(1) << bits.Len64(utreexoparams.AssumeUtreexoPoint(cfg.Params.Net).NumLeaves)
 	forest, err := utreexo.OpenForest(basePath,
 		utreexo.MaxCacheMemory(cfg.MaxMemoryUsage),
 		utreexo.ExpectedMaxLeaves(presizeLeaves),

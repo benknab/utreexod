@@ -17,13 +17,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
 	_ "github.com/utreexo/utreexod/database/ffldb"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 const (
@@ -264,7 +264,7 @@ func NewBlock(chain *BlockChain, prev *btcutil.Block, spends []*SpendableOut) (*
 
 	block := btcutil.NewBlock(&wire.MsgBlock{
 		Header: wire.BlockHeader{
-			Version:    1,
+			Version:    4,
 			PrevBlock:  *prev.Hash(),
 			MerkleRoot: *merkles[len(merkles)-1],
 			Bits:       chain.chainParams.PowLimitBits,

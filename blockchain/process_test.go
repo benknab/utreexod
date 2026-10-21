@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func chainedHeaders(parent *wire.BlockHeader, chainParams *chaincfg.Params,
@@ -39,7 +39,8 @@ func chainedHeaders(parent *wire.BlockHeader, chainParams *chaincfg.Params,
 		merkle := chainhash.HashH(randBytes[:])
 
 		header := wire.BlockHeader{
-			Version:    1,
+			// Regtest enforces the BIP34/65/66 version floor from height 1.
+			Version:    4,
 			PrevBlock:  tip.BlockHash(),
 			MerkleRoot: merkle,
 			Bits:       chainParams.PowLimitBits,
@@ -203,6 +204,7 @@ func TestBestHeaderUpdateOnBlockAccept(t *testing.T) {
 	defer tearDown()
 
 	genesis := btcutil.NewBlock(params.GenesisBlock)
+	genesis.SetHeight(0)
 
 	// Verify bestHeader starts at genesis.
 	require.Equal(t, int32(0), chain.bestHeader.Tip().height)

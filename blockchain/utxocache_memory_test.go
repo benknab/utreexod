@@ -4,8 +4,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func TestUtxoCacheReplacementMemory(t *testing.T) {

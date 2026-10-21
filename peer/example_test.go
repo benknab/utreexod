@@ -10,9 +10,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/utreexo/utreexod/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/peer"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // mockRemotePeer creates a basic inbound peer listening on the simnet port for

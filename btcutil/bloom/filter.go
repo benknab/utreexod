@@ -9,10 +9,10 @@ import (
 	"math"
 	"sync"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // ln2Squared is simply the square of the natural log of 2.
@@ -76,12 +76,21 @@ func NewFilter(elements, tweak uint32, fprate float64, flags wire.BloomUpdateTyp
 	}
 }
 
+// normalize adjusts filter parameters for consistency.
+func (bf *Filter) normalize() {
+	if bf.msgFilterLoad != nil && len(bf.msgFilterLoad.Filter) == 0 {
+		bf.msgFilterLoad.HashFuncs = 0
+	}
+}
+
 // LoadFilter creates a new Filter instance with the given underlying
 // wire.MsgFilterLoad.
 func LoadFilter(filter *wire.MsgFilterLoad) *Filter {
-	return &Filter{
+	bf := &Filter{
 		msgFilterLoad: filter,
 	}
+	bf.normalize()
+	return bf
 }
 
 // IsLoaded returns true if a filter is loaded, otherwise false.
@@ -100,6 +109,7 @@ func (bf *Filter) IsLoaded() bool {
 func (bf *Filter) Reload(filter *wire.MsgFilterLoad) {
 	bf.mtx.Lock()
 	bf.msgFilterLoad = filter
+	bf.normalize()
 	bf.mtx.Unlock()
 }
 
@@ -147,7 +157,8 @@ func (bf *Filter) matches(data []byte) bool {
 			return false
 		}
 	}
-	return true
+
+	return bf.msgFilterLoad.HashFuncs > 0
 }
 
 // Matches returns true if the bloom filter might contain the passed data and

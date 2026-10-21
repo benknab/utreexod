@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 type addrWorkerFixture struct {
@@ -68,6 +68,9 @@ func (f *addrWorkerFixture) restart() {
 // Coinbase outputs use a standard address. Spending transactions pay OP_TRUE,
 // so their only reference to the address comes from the archived input script.
 func (f *addrWorkerFixture) add(prev *btcutil.Block, spend *blockchain.SpendableOut) (*btcutil.Block, *blockchain.SpendableOut) {
+	if *prev.Hash() == *f.params.GenesisHash {
+		prev.SetHeight(0)
+	}
 	var spends []*blockchain.SpendableOut
 	if spend != nil {
 		spends = append(spends, spend)

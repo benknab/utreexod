@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/database"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // Hiding the optional capability exercises the fallback for other backends.

@@ -14,13 +14,16 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
+	"github.com/utreexo/utreexod/bip182"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
+	"github.com/utreexo/utreexod/mining"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // fakeChain is used by the pool harness to provide generated test utxos and
@@ -1893,15 +1896,15 @@ func TestRBFUtreexoDataFailure(t *testing.T) {
 	// remember=true call, simulating the accumulator state changing
 	// between the initial proof check and the ingestion.
 	harness.txPool.cfg.IsUtreexoViewActive = func() bool { return true }
-	harness.txPool.cfg.VerifyUData = func(ud *wire.UData, txIns []*wire.TxIn, remember bool) error {
+	harness.txPool.cfg.VerifyUData = func(ud *bip183.UData, txIns []*wire.TxIn, remember bool) error {
 		if remember {
 			return fmt.Errorf("simulated accumulator state change")
 		}
 		return nil
 	}
 
-	udata := &wire.UData{
-		LeafDatas: []wire.LeafData{{
+	udata := &bip183.UData{
+		LeafDatas: []bip182.LeafData{{
 			OutPoint: replacementTx.MsgTx().TxIn[0].PreviousOutPoint,
 			Amount:   coinbase.MsgTx().TxOut[0].Value,
 			PkScript: harness.payScript,
@@ -1941,7 +1944,7 @@ func TestRemoveTransactionCleansUtreexoData(t *testing.T) {
 	// Simulate utreexo proof data by writing directly to poolLeaves.
 	// In production this is done by addUtreexoData during ProcessTransaction
 	// on utreexo nodes.
-	fakeLeaves := []wire.LeafData{
+	fakeLeaves := []bip182.LeafData{
 		{
 			OutPoint:   wire.OutPoint{Hash: *tx.Hash(), Index: 0},
 			Height:     1,
@@ -1981,8 +1984,8 @@ func TestRemoveTransactionPrunesUtreexoAccumulator(t *testing.T) {
 
 	// Install a recording PruneFromAccumulator that captures the leaves it
 	// is invoked with.
-	var pruned [][]wire.LeafData
-	harness.txPool.cfg.PruneFromAccumulator = func(leaves []wire.LeafData) error {
+	var pruned [][]bip182.LeafData
+	harness.txPool.cfg.PruneFromAccumulator = func(leaves []bip182.LeafData) error {
 		pruned = append(pruned, leaves)
 		return nil
 	}
@@ -1992,7 +1995,7 @@ func TestRemoveTransactionPrunesUtreexoAccumulator(t *testing.T) {
 	tx := ctx.addSignedTx(outputs, 1, 0, false, false)
 	testPoolMembership(ctx, tx, false, true)
 
-	fakeLeaves := []wire.LeafData{
+	fakeLeaves := []bip182.LeafData{
 		{
 			OutPoint:   wire.OutPoint{Hash: *tx.Hash(), Index: 0},
 			Height:     1,
@@ -2016,4 +2019,31 @@ func TestRemoveTransactionPrunesUtreexoAccumulator(t *testing.T) {
 	harness.txPool.RemoveTransaction(otherTx, false)
 	require.Len(t, pruned, 1,
 		"PruneFromAccumulator should not fire when no leaves are cached")
+}
+
+// TestRawMempoolVerboseCurrentPriority ensures that RawMempoolVerbose looks up
+// the inputs of a transaction in the utxo set when the utreexo view is not
+// active, as on bridge nodes, and reports the resulting current priority.
+func TestRawMempoolVerboseCurrentPriority(t *testing.T) {
+	t.Parallel()
+
+	harness, outputs, err := newPoolHarness(&chaincfg.MainNetParams)
+	require.NoError(t, err, "unable to create test pool")
+
+	ctx := &testContext{t, harness}
+
+	// The harness pool has the utreexo view inactive and no entries in
+	// poolLeaves, so the inputs of the transaction are only in the utxo
+	// set.
+	tx := ctx.addSignedTx(outputs, 1, 0, false, false)
+
+	utxos, err := harness.chain.FetchUtxoView(tx)
+	require.NoError(t, err)
+	want := mining.CalcPriority(tx.MsgTx(), utxos,
+		harness.chain.BestHeight()+1)
+	require.NotZero(t, want, "transaction should have a nonzero priority")
+
+	result := harness.txPool.RawMempoolVerbose()
+	require.Contains(t, result, tx.Hash().String())
+	require.Equal(t, want, result[tx.Hash().String()].CurrentPriority)
 }

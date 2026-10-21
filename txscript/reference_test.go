@@ -17,9 +17,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // scriptTestName returns a descriptive test name for the given reference script
@@ -196,6 +196,8 @@ func parseScriptFlags(flagStr string) (ScriptFlags, error) {
 			flags |= ScriptVerifyWitnessPubKeyType
 		case "TAPROOT":
 			flags |= ScriptVerifyTaproot
+		case "CONST_SCRIPTCODE":
+			flags |= ScriptVerifyConstScriptCode
 		default:
 			return flags, fmt.Errorf("invalid flag: %s", flag)
 		}

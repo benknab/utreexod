@@ -9,16 +9,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/blockchain/indexers"
 	"github.com/utreexo/utreexod/btcjson"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/mempool"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // Serve real HTTP RPC against a validating regtest chain and proof index while
@@ -50,7 +50,9 @@ func TestRPCDuringAddressCatchUp(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, proofIndex.CloseUtreexoState()) })
-	b1, _, err := blockchain.AddBlock(chain, btcutil.NewBlock(params.GenesisBlock), nil)
+	genesis := btcutil.NewBlock(params.GenesisBlock)
+	genesis.SetHeight(0)
+	b1, _, err := blockchain.AddBlock(chain, genesis, nil)
 	require.NoError(t, err)
 	b2, _, err := blockchain.AddBlock(chain, b1, nil)
 	require.NoError(t, err)

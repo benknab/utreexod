@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 func hashCacheBenchmarkTx(inputs int, taproot bool) (*wire.MsgTx, PrevOutputFetcher) {

@@ -31,14 +31,16 @@ import (
 	cryptorand "crypto/rand"
 
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/btcsuite/websocket"
 	"github.com/utreexo/utreexod/bdkwallet"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/blockchain/indexers"
 	"github.com/utreexo/utreexod/btcjson"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/mempool"
 	"github.com/utreexo/utreexod/mining"
@@ -46,7 +48,6 @@ import (
 	"github.com/utreexo/utreexod/peer"
 	"github.com/utreexo/utreexod/txscript"
 	"github.com/utreexo/utreexod/wallet"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // API version constants
@@ -1429,6 +1430,9 @@ func handleGetBlockChainInfo(s *rpcServer, cmd interface{}, closeChan <-chan str
 
 		case chaincfg.DeploymentTestDummyMinActivation:
 			forkName = "dummy-min-activation"
+
+		case chaincfg.DeploymentTestDummyAlwaysActive:
+			forkName = "dummy-always-active"
 
 		case chaincfg.DeploymentCSV:
 			forkName = "csv"
@@ -3364,7 +3368,7 @@ func handleGetUtreexoProof(s *rpcServer, cmd interface{}, closeChan <-chan struc
 
 	// We already checked that at least one index is active.  Pick one and
 	// generate the inclusion proof.
-	var udata *wire.UData
+	var udata *bip183.UData
 	if s.cfg.UtreexoProofIndex != nil {
 		udata, err = s.cfg.UtreexoProofIndex.FetchUtreexoProof(blockHash)
 		if err != nil {
@@ -4483,7 +4487,7 @@ func handleSubmitBlockAndUtreexoProof(s *rpcServer, cmd interface{}, closeChan <
 	if err != nil {
 		return nil, err
 	}
-	proof, err := wire.BatchProofDeserialize(bytes.NewReader(serializedProof))
+	proof, err := bip183.BatchProofDeserialize(bytes.NewReader(serializedProof))
 	if err != nil {
 		return nil, &btcjson.RPCError{
 			Code:    btcjson.ErrRPCDeserialization,
@@ -4495,7 +4499,7 @@ func handleSubmitBlockAndUtreexoProof(s *rpcServer, cmd interface{}, closeChan <
 	if err != nil {
 		return nil, err
 	}
-	leafDatas, err := wire.DeserializeUtxoData(bytes.NewReader(serializedLeafData))
+	leafDatas, err := bip183.DeserializeUtxoData(bytes.NewReader(serializedLeafData))
 	if err != nil {
 		return nil, &btcjson.RPCError{
 			Code:    btcjson.ErrRPCDeserialization,
@@ -4504,7 +4508,7 @@ func handleSubmitBlockAndUtreexoProof(s *rpcServer, cmd interface{}, closeChan <
 	}
 
 	block.SetUtreexoData(
-		&wire.UData{
+		&bip183.UData{
 			AccProof:  *proof,
 			LeafDatas: leafDatas,
 		})

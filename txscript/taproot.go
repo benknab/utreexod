@@ -10,8 +10,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/schnorr"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 
 	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 )
@@ -85,8 +85,8 @@ func VerifyTaprootKeySpend(witnessProgram []byte, rawSig []byte, tx *wire.MsgTx,
 		return err
 	}
 
-	valid := keySpendVerifier.Verify()
-	if valid {
+	result := keySpendVerifier.Verify()
+	if result.sigValid {
 		return nil
 	}
 

@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/stretchr/testify/require"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // A delayed index must reconstruct the same leaves after its input block is
@@ -15,7 +15,9 @@ import (
 func TestProofReplayPinsBlockAncestry(t *testing.T) {
 	chain, params, cleanup := utxoCacheTestChain(t.Name())
 	t.Cleanup(cleanup)
-	b1, spends1, err := AddBlock(chain, btcutil.NewBlock(params.GenesisBlock), nil)
+	genesis := btcutil.NewBlock(params.GenesisBlock)
+	genesis.SetHeight(0)
+	b1, spends1, err := AddBlock(chain, genesis, nil)
 	require.NoError(t, err)
 	a2, spends2, err := AddBlock(chain, b1, spends1)
 	require.NoError(t, err)
@@ -27,7 +29,7 @@ func TestProofReplayPinsBlockAncestry(t *testing.T) {
 	want, err := BlockToDelLeaves(stxos, chain, a3, inskip)
 	require.NoError(t, err)
 	var compact bytes.Buffer
-	require.NoError(t, wire.SerializeUtxoData(&compact, want))
+	require.NoError(t, bip183.SerializeUtxoData(&compact, want))
 
 	other, outs, err := AddBlock(chain, b1, spends1)
 	require.NoError(t, err)
@@ -41,9 +43,9 @@ func TestProofReplayPinsBlockAncestry(t *testing.T) {
 	got, err := BlockToDelLeaves(stxos, chain, a3, inskip)
 	require.NoError(t, err)
 	require.Equal(t, want, got)
-	lds, err := wire.DeserializeUtxoData(bytes.NewReader(compact.Bytes()))
+	lds, err := bip183.DeserializeUtxoData(bytes.NewReader(compact.Bytes()))
 	require.NoError(t, err)
-	ud := &wire.UData{LeafDatas: lds}
+	ud := &bip183.UData{LeafDatas: lds}
 	hashes, err := chain.ReconstructUData(ud, *a3.Hash())
 	require.NoError(t, err)
 	for i := range want {

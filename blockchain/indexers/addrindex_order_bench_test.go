@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/database/ffldb"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // Preserve the original map loop as the benchmark and differential-test oracle.

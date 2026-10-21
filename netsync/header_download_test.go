@@ -4,18 +4,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func parallelDownloadFixture(t *testing.T, count int) (*SyncManager, []*btcutil.Block) {
 	t.Helper()
 	params := chaincfg.RegressionNetParams
 	params.Checkpoints = nil
+	// Mock peers have no version handshake and do not advertise witness support.
+	params.Deployments[chaincfg.DeploymentSegwit].AlwaysActiveHeight = 0
 	sm, cleanup := makeMockSyncManager(t, &params)
 	t.Cleanup(cleanup)
 	blocks := generateTestBlocks(t, &params, count)

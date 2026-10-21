@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func scriptValidationBenchmarkTx(inputs int) *btcutil.Tx {

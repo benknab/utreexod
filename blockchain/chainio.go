@@ -12,11 +12,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
-	"github.com/utreexo/utreexod/wire"
 )
 
 const (
@@ -1584,7 +1585,7 @@ func dbFetchBlockByNode(dbTx database.Tx, node *blockNode, isUtreexo bool) (*btc
 			return nil, err
 		}
 		if proofBytes != nil {
-			ud := new(wire.UData)
+			ud := new(bip183.UData)
 			if err := ud.Deserialize(bytes.NewReader(proofBytes)); err != nil {
 				return nil, err
 			}

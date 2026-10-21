@@ -22,7 +22,7 @@ func TestCalcBlockFilesSizeAbove4GiB(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := uint64(12) * 1024 * 1024 * 1024
-	if uint64(got) != want {
+	if got != want {
 		t.Fatalf("total size = %d, want %d", got, want)
 	}
 }

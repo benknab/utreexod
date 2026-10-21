@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip182"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func BenchmarkBlockToDelLeaves(b *testing.B) {
@@ -56,7 +57,7 @@ func BenchmarkProofAdditionHashes(b *testing.B) {
 					hashes = BlockToAddHashes(block, nil, 5000)
 				} else {
 					leaves := BlockToAddLeaves(block, nil, 5000)
-					hasher := wire.NewLeafHasher()
+					hasher := bip182.NewLeafHasher()
 					hashes = make([]utreexo.Leaf, len(leaves))
 					for i := range leaves {
 						hashes[i].Hash = hasher.HashLeaf(&leaves[i])

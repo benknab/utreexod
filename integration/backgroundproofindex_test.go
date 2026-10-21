@@ -4,13 +4,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcjson"
-	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/integration/rpctest"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func TestBackgroundProofRPCAndServices(t *testing.T) {
@@ -48,7 +49,7 @@ func TestBackgroundProofRPCAndServices(t *testing.T) {
 	}
 	services := observeServices()
 	require.NotZero(t, services&wire.SFNodeNetwork)
-	require.Zero(t, services&(wire.SFNodeUtreexo|wire.SFNodeUtreexoArchive))
+	require.Zero(t, services&(bip183.SFNodeUtreexo|bip183.SFNodeUtreexoArchive))
 
 	waitSynced := func() {
 		_, err := bridge.Client.SetProofIndexPaused(false)
@@ -66,8 +67,8 @@ func TestBackgroundProofRPCAndServices(t *testing.T) {
 		return err == nil
 	}, 5*time.Second, 10*time.Millisecond)
 	services = observeServices()
-	require.Equal(t, wire.ServiceFlag(wire.SFNodeUtreexo|wire.SFNodeUtreexoArchive),
-		services&(wire.SFNodeUtreexo|wire.SFNodeUtreexoArchive))
+	require.Equal(t, wire.ServiceFlag(bip183.SFNodeUtreexo|bip183.SFNodeUtreexoArchive),
+		services&(bip183.SFNodeUtreexo|bip183.SFNodeUtreexoArchive))
 
 	// A paused proof index must neither reject nor stall RPC invalidation.
 	require.NoError(t, bridge.Client.InvalidateBlock(blocks[8]))

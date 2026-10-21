@@ -7,10 +7,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/utreexo/utreexod/wire"
+	"github.com/utreexo/utreexod/bip182"
 )
 
-func ttlBatchFixture(t testing.TB, heights int) (*FlatFileState, []wire.LeafData, []int32) {
+func ttlBatchFixture(t testing.TB, heights int) (*FlatFileState, []bip182.LeafData, []int32) {
 	t.Helper()
 	f := NewFlatFileState()
 	if err := f.Init(t.TempDir(), "ttl"); err != nil {
@@ -22,7 +22,7 @@ func ttlBatchFixture(t testing.TB, heights int) (*FlatFileState, []wire.LeafData
 			t.Fatal(err)
 		}
 	}
-	lds, indexes := make([]wire.LeafData, 5000), make([]int32, 5000)
+	lds, indexes := make([]bip182.LeafData, 5000), make([]int32, 5000)
 	for i := range lds {
 		lds[i].Height = int32(i%heights + 1)
 		indexes[i] = int32(i)

@@ -9,10 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/chainhash/v2"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // BalanceResult models the data from the balance command.
@@ -483,11 +483,6 @@ type ScriptPubKeyResult struct {
 	ReqSigs   int32    `json:"reqSigs,omitempty"`
 	Type      string   `json:"type"`
 	Addresses []string `json:"addresses,omitempty"`
-}
-
-// GetTTLResult models the data from the getttl command.
-type GetTTLResult struct {
-	TTL int32 `json:"ttl"`
 }
 
 // GetTxOutResult models the data from the gettxout command.

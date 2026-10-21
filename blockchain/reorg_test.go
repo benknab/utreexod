@@ -7,14 +7,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip182"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/txscript"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // TestReorg exercises connecting a main chain of blocks followed by a
@@ -26,6 +27,7 @@ func TestReorg(t *testing.T) {
 	chain, params, tearDown := utxoCacheTestChain("TestReorg")
 	defer tearDown()
 	tip := btcutil.NewBlock(params.GenesisBlock)
+	tip.SetHeight(0)
 
 	// Create block at height 1.
 	var emptySpendableOuts []*SpendableOut
@@ -150,7 +152,7 @@ func countingUtreexoTestChain(t *testing.T, name string) (*BlockChain,
 
 // spendableOutsFromLeaves converts the accumulator leaves into the
 // spendable outs consumed by NewBlock.
-func spendableOutsFromLeaves(leaves []wire.LeafData) []*SpendableOut {
+func spendableOutsFromLeaves(leaves []bip182.LeafData) []*SpendableOut {
 	spends := make([]*SpendableOut, len(leaves))
 	for i := range leaves {
 		leaf := leaves[i]
@@ -178,8 +180,8 @@ func newTestUtreexoProofState() *testUtreexoProofState {
 // and attaches a valid proof for the tracked state.  It returns the block
 // along with the accumulator leaves it creates.
 func (s *testUtreexoProofState) newBlock(t *testing.T, chain *BlockChain,
-	prev *btcutil.Block, spends []wire.LeafData) (*btcutil.Block,
-	[]wire.LeafData) {
+	prev *btcutil.Block, spends []bip182.LeafData) (*btcutil.Block,
+	[]bip182.LeafData) {
 
 	t.Helper()
 
@@ -191,11 +193,11 @@ func (s *testUtreexoProofState) newBlock(t *testing.T, chain *BlockChain,
 
 // attachUData proves the block and advances the tracked branch state.
 func (s *testUtreexoProofState) attachUData(t *testing.T, block *btcutil.Block,
-	spends []wire.LeafData) []wire.LeafData {
+	spends []bip182.LeafData) []bip182.LeafData {
 
 	t.Helper()
 
-	udata, err := wire.GenerateUData(spends, &s.uView.accumulator)
+	udata, err := bip183.GenerateUData(spends, &s.uView.accumulator)
 	require.NoError(t, err, "GenerateUData")
 	block.SetUtreexoData(udata)
 
@@ -294,7 +296,7 @@ func TestInvalidUtreexoProofIsNotStored(t *testing.T) {
 			// Corrupt the proof by changing a committed leaf amount.
 			block, _ := branchProofState.newBlock(t, chain, forkBlock, forkAdds[:1])
 			ud := *block.UtreexoData()
-			ud.LeafDatas = append([]wire.LeafData(nil), ud.LeafDatas...)
+			ud.LeafDatas = append([]bip182.LeafData(nil), ud.LeafDatas...)
 			ud.LeafDatas[0].Amount++
 			block.SetUtreexoData(&ud)
 

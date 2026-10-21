@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/blockchain/internal/sizehelper"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/database/ffldb"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func TestUtxoCacheMap(t *testing.T) {
@@ -389,6 +389,7 @@ func TestUtxoCacheFlush(t *testing.T) {
 	defer tearDown()
 	cache := chain.utxoCache
 	tip := btcutil.NewBlock(params.GenesisBlock)
+	tip.SetHeight(0)
 
 	// The chainSetup init triggers the consistency status write.
 	err := assertConsistencyState(chain, params.GenesisHash)

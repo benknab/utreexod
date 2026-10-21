@@ -11,8 +11,8 @@ import (
 	"math"
 	"sync"
 
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 )
 
 // Reuse a bounded streaming workspace instead of retaining preimages whose

@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chainhash/v2"
 	"github.com/utreexo/utreexo"
+	"github.com/utreexo/utreexod/bip182"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/database"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // recover runs before any reader is admitted to the index. The WAL hash is
@@ -194,7 +194,7 @@ func (b *BackgroundProofIndex) repairTTLs(block *btcutil.Block, restore bool) er
 		}
 	}
 	delHashes := make([]utreexo.Hash, len(retained))
-	hasher := wire.NewLeafHasher()
+	hasher := bip182.NewLeafHasher()
 	for i := range retained {
 		delHashes[i] = hasher.HashLeaf(&retained[i])
 	}

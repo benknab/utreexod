@@ -5,10 +5,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/stretchr/testify/require"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/wire"
 )
 
 func TestProofReplayReaderBranchAndBoundary(t *testing.T) {

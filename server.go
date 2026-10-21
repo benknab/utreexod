@@ -22,16 +22,19 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/decred/dcrd/lru"
 	"github.com/utreexo/utreexo"
 	"github.com/utreexo/utreexod/addrmgr"
 	"github.com/utreexo/utreexod/bdkwallet"
+	"github.com/utreexo/utreexod/bip182"
+	"github.com/utreexo/utreexod/bip183"
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/blockchain/indexers"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/btcutil/bloom"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 	"github.com/utreexo/utreexod/connmgr"
 	"github.com/utreexo/utreexod/database"
 	"github.com/utreexo/utreexod/electrum"
@@ -41,8 +44,8 @@ import (
 	"github.com/utreexo/utreexod/netsync"
 	"github.com/utreexo/utreexod/peer"
 	"github.com/utreexo/utreexod/txscript"
+	"github.com/utreexo/utreexod/utreexoparams"
 	"github.com/utreexo/utreexod/wallet"
-	"github.com/utreexo/utreexod/wire"
 )
 
 const (
@@ -526,7 +529,7 @@ func (sp *serverPeer) OnVersion(_ *peer.Peer, msg *wire.MsgVersion) *wire.MsgRej
 	// Also reject outbound peers that aren't utreexo nodes if we're a utreexo csn.
 	var wantServices wire.ServiceFlag
 	if sp.server.chain.IsUtreexoViewActive() {
-		wantServices |= wire.SFNodeUtreexo
+		wantServices |= bip183.SFNodeUtreexo
 	}
 	if !isInbound && !hasServices(msg.Services, wantServices) {
 		missingServices := wantServices & ^msg.Services
@@ -668,7 +671,7 @@ func (sp *serverPeer) OnTx(_ *peer.Peer, msg *wire.MsgTx) {
 // It blocks until the bitcoin transaction has been fully processed.  Unlock the block
 // handler this does not serialize all transactions through a single thread
 // transactions don't rely on the previous one in a linear fashion like blocks.
-func (sp *serverPeer) OnUtreexoTx(_ *peer.Peer, msg *wire.MsgUtreexoTx) {
+func (sp *serverPeer) OnUtreexoTx(_ *peer.Peer, msg *bip183.MsgUtreexoTx) {
 	if cfg.BlocksOnly {
 		peerLog.Tracef("Ignoring utreexo tx %v from %v - blocksonly enabled",
 			msg.TxHash(), sp)
@@ -802,14 +805,14 @@ func (sp *serverPeer) OnGetData(_ *peer.Peer, msg *wire.MsgGetData) {
 			err = sp.server.pushTxMsg(sp, &iv.Hash, c, waitChan, wire.WitnessEncoding)
 		case wire.InvTypeTx:
 			err = sp.server.pushTxMsg(sp, &iv.Hash, c, waitChan, wire.BaseEncoding)
-		case wire.InvTypeWitnessUtreexoTx:
+		case bip183.InvTypeWitnessUtreexoTx:
 			fallthrough
-		case wire.InvTypeUtreexoTx:
+		case bip183.InvTypeUtreexoTx:
 			// Extract all the packed positions. They're appended to the tx inv.
 			packedPositions := make([]chainhash.Hash, 0, len(msg.InvList)-(i+1))
 			if i+1 < len(msg.InvList) {
 				for j := i + 1; j < len(msg.InvList); j++ {
-					if msg.InvList[j].Type == wire.InvTypeUtreexoProofHash {
+					if msg.InvList[j].Type == bip183.InvTypeUtreexoProofHash {
 						packedPositions = append(packedPositions, msg.InvList[j].Hash)
 						msg.InvList = append(msg.InvList[:j], msg.InvList[j+1:]...)
 						j--
@@ -1267,7 +1270,7 @@ func (sp *serverPeer) OnGetCFCheckpt(_ *peer.Peer, msg *wire.MsgGetCFCheckpt) {
 }
 
 // OnGetUtreexoProof is invoked when a peer receives a getutreexoproof bitcoin message.
-func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *wire.MsgGetUtreexoProof) {
+func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *bip183.MsgGetUtreexoProof) {
 	// Check if we're a utreexo node. Ignore if we're not.
 	if sp.server.utreexoProofIndex == nil && sp.server.flatUtreexoProofIndex == nil && cfg.NoUtreexo {
 		return
@@ -1294,7 +1297,7 @@ func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *wire.MsgGetUtreexoPro
 	}
 
 	// Fetch UData.
-	var udata *wire.UData
+	var udata *bip183.UData
 	if !cfg.NoUtreexo {
 		udata = block.UtreexoData()
 	}
@@ -1322,7 +1325,7 @@ func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *wire.MsgGetUtreexoPro
 	}
 
 	// Construct utreexo proof to send.
-	leafDatas := make([]wire.LeafData, 0, len(udata.LeafDatas))
+	leafDatas := make([]bip182.LeafData, 0, len(udata.LeafDatas))
 	for i := 0; i < len(udata.LeafDatas); i++ {
 		if msg.IsEntireLeafDataRequested() || msg.IsLeafDataRequestedAtIdx(i) {
 			leafDatas = append(leafDatas, udata.LeafDatas[i])
@@ -1335,7 +1338,7 @@ func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *wire.MsgGetUtreexoPro
 			proofHashes = append(proofHashes, udata.AccProof.Proof[i])
 		}
 	}
-	utreexoProof := wire.MsgUtreexoProof{
+	utreexoProof := bip183.MsgUtreexoProof{
 		BlockHash:   msg.BlockHash,
 		ProofHashes: proofHashes,
 		LeafDatas:   leafDatas,
@@ -1349,7 +1352,7 @@ func (sp *serverPeer) OnGetUtreexoProof(_ *peer.Peer, msg *wire.MsgGetUtreexoPro
 }
 
 // OnGetUtreexoRoot is invoked when a peer receives a getutreexoroot bitcoin message.
-func (sp *serverPeer) OnGetUtreexoRoot(_ *peer.Peer, msg *wire.MsgGetUtreexoRoot) {
+func (sp *serverPeer) OnGetUtreexoRoot(_ *peer.Peer, msg *bip183.MsgGetUtreexoRoot) {
 	// Ignore getutreexoroot requests if not in sync.
 	if !sp.server.syncManager.IsCurrent() {
 		return
@@ -1361,7 +1364,7 @@ func (sp *serverPeer) OnGetUtreexoRoot(_ *peer.Peer, msg *wire.MsgGetUtreexoRoot
 	}
 
 	var err error
-	var utreexoRootMsg *wire.MsgUtreexoRoot
+	var utreexoRootMsg *bip183.MsgUtreexoRoot
 	if sp.server.flatUtreexoProofIndex != nil {
 		utreexoRootMsg, err = sp.server.flatUtreexoProofIndex.FetchMsgUtreexoRoot(&msg.BlockHash)
 		if err != nil {
@@ -1384,7 +1387,7 @@ func (sp *serverPeer) OnGetUtreexoRoot(_ *peer.Peer, msg *wire.MsgGetUtreexoRoot
 }
 
 // OnGetUtreexoTTLs is invoked when a peer receives a getutreexottls bitcoin message.
-func (sp *serverPeer) OnGetUtreexoTTLs(_ *peer.Peer, msg *wire.MsgGetUtreexoTTLs) {
+func (sp *serverPeer) OnGetUtreexoTTLs(_ *peer.Peer, msg *bip183.MsgGetUtreexoTTLs) {
 	// Ignore getutreexottls requests if not in sync.
 	if !sp.server.syncManager.IsCurrent() {
 		return
@@ -1405,12 +1408,12 @@ func (sp *serverPeer) OnGetUtreexoTTLs(_ *peer.Peer, msg *wire.MsgGetUtreexoTTLs
 }
 
 // OnUtreexoProof is invoked when a peer receives a utreexoproof bitcoin message.
-func (sp *serverPeer) OnUtreexoProof(_ *peer.Peer, msg *wire.MsgUtreexoProof) {
+func (sp *serverPeer) OnUtreexoProof(_ *peer.Peer, msg *bip183.MsgUtreexoProof) {
 	sp.server.syncManager.QueueUtreexoProof(msg, sp.Peer)
 }
 
 // OnUtreexoTTLs is invoked when a peer receives a utreexo ttls bitcoin message.
-func (sp *serverPeer) OnUtreexoTTLs(_ *peer.Peer, msg *wire.MsgUtreexoTTLs) {
+func (sp *serverPeer) OnUtreexoTTLs(_ *peer.Peer, msg *bip183.MsgUtreexoTTLs) {
 	sp.server.syncManager.QueueUtreexoTTLs(msg, sp.Peer)
 }
 
@@ -1662,7 +1665,7 @@ func (sp *serverPeer) OnRead(_ *peer.Peer, bytesRead int, msg wire.Message, err 
 	sp.server.AddBytesReceived(uint64(bytesRead))
 
 	switch msg := msg.(type) {
-	case *wire.MsgUtreexoTx:
+	case *bip183.MsgUtreexoTx:
 		sp.server.UpdateProofBytesRead(msg)
 		sp.server.addTxBytesReceived(uint64(bytesRead))
 	}
@@ -1674,7 +1677,7 @@ func (sp *serverPeer) OnWrite(_ *peer.Peer, bytesWritten int, msg wire.Message, 
 	sp.server.AddBytesSent(uint64(bytesWritten))
 
 	switch msg := msg.(type) {
-	case *wire.MsgUtreexoTx:
+	case *bip183.MsgUtreexoTx:
 		sp.server.UpdateProofBytesWritten(msg)
 		sp.server.addTxBytesSent(uint64(bytesWritten))
 	}
@@ -1697,9 +1700,9 @@ func (sp *serverPeer) OnNotFound(p *peer.Peer, msg *wire.MsgNotFound) {
 			numTxns++
 		case wire.InvTypeWitnessTx:
 			numTxns++
-		case wire.InvTypeWitnessUtreexoTx:
+		case bip183.InvTypeWitnessUtreexoTx:
 			numTxns++
-		case wire.InvTypeUtreexoTx:
+		case bip183.InvTypeUtreexoTx:
 			numTxns++
 		default:
 			peerLog.Debugf("Invalid inv type '%d' in notfound message from %s",
@@ -1875,7 +1878,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 		return err
 	}
 
-	var utreexoTx *wire.MsgUtreexoTx
+	var utreexoTx *bip183.MsgUtreexoTx
 	// For compact state nodes.
 	if !cfg.NoUtreexo {
 		// Fetch the necessary leafdatas to create the utreexo data.
@@ -1893,7 +1896,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 		// Packed positions may be nil or of a length 0 if the
 		// peer already has all the necessary proof hashes cached.
 		if packedPositions != nil || len(packedPositions) == 0 {
-			positions := chainhash.PackedHashesToUint64(packedPositions)
+			positions := bip183.PackedHashesToUint64(packedPositions)
 			ud, err := s.chain.GenerateUDataPartial(leafDatas, positions)
 			if err != nil {
 				chanLog.Errorf(err.Error())
@@ -1903,7 +1906,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 				return err
 			}
 
-			utreexoTx = &wire.MsgUtreexoTx{
+			utreexoTx = &bip183.MsgUtreexoTx{
 				MsgTx:     *tx.MsgTx(),
 				LeafDatas: ud.LeafDatas,
 				AccProof:  ud.AccProof,
@@ -1923,7 +1926,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 				return err
 			}
 
-			positions := chainhash.PackedHashesToUint64(packedPositions)
+			positions := bip183.PackedHashesToUint64(packedPositions)
 			ud, err := s.utreexoProofIndex.GenerateUDataPartial(leafDatas, positions)
 			if err != nil {
 				chanLog.Errorf(err.Error())
@@ -1933,7 +1936,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 				return err
 			}
 
-			utreexoTx = &wire.MsgUtreexoTx{
+			utreexoTx = &bip183.MsgUtreexoTx{
 				MsgTx:     *tx.MsgTx(),
 				LeafDatas: ud.LeafDatas,
 				AccProof:  ud.AccProof,
@@ -1949,7 +1952,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 				}
 				return err
 			}
-			positions := chainhash.PackedHashesToUint64(packedPositions)
+			positions := bip183.PackedHashesToUint64(packedPositions)
 			ud, err := s.flatUtreexoProofIndex.GenerateUDataPartial(leafDatas, positions)
 			if err != nil {
 				chanLog.Errorf(err.Error())
@@ -1959,7 +1962,7 @@ func (s *server) pushUtreexoTxMsg(sp *serverPeer, hash *chainhash.Hash, packedPo
 				return err
 			}
 
-			utreexoTx = &wire.MsgUtreexoTx{
+			utreexoTx = &bip183.MsgUtreexoTx{
 				MsgTx:     *tx.MsgTx(),
 				LeafDatas: ud.LeafDatas,
 				AccProof:  ud.AccProof,
@@ -2303,8 +2306,8 @@ func (s *server) relayUtreexoTxInv(sp *serverPeer, msg relayMsg) {
 	switch msg.invVect.Type {
 	case wire.InvTypeTx:
 	case wire.InvTypeWitnessTx:
-	case wire.InvTypeUtreexoTx:
-	case wire.InvTypeWitnessUtreexoTx:
+	case bip183.InvTypeUtreexoTx:
+	case bip183.InvTypeWitnessUtreexoTx:
 	default:
 		// Not a tx so just return.
 		return
@@ -2342,13 +2345,15 @@ func (s *server) relayUtreexoTxInv(sp *serverPeer, msg relayMsg) {
 		// Pick a proof index that's not nil.
 		if s.utreexoProofIndex != nil {
 			positions := s.utreexoProofIndex.GetLeafHashPositions(leafHashes)
-			packedPositions = chainhash.Uint64sToPackedHashes(positions)
+			packedPositions = bip183.Uint64sToPackedHashes(positions)
 		} else {
 			positions, err := s.flatUtreexoProofIndex.GetLeafHashPositions(leafHashes)
 			if err != nil {
+				btcdLog.Debugf("Couldn't relay tx %s as the proof index is unavailable: %v",
+					msg.invVect.Hash.String(), err)
 				return
 			}
-			packedPositions = chainhash.Uint64sToPackedHashes(positions)
+			packedPositions = bip183.Uint64sToPackedHashes(positions)
 		}
 	default:
 		// Get the leaf datas to figure out the positions needed to send
@@ -2386,7 +2391,7 @@ func (s *server) relayUtreexoTxInv(sp *serverPeer, msg relayMsg) {
 	invVects = append(invVects, msg.invVect)
 	for i := range packedPositions {
 		invVects = append(invVects,
-			wire.NewInvVect(wire.InvTypeUtreexoProofHash, &packedPositions[i]))
+			wire.NewInvVect(bip183.InvTypeUtreexoProofHash, &packedPositions[i]))
 	}
 
 	// Queue the inventory.
@@ -2662,7 +2667,7 @@ func disconnectPeer(peerList map[int32]*serverPeer, compareFunc func(*serverPeer
 func newPeerConfig(sp *serverPeer) *peer.Config {
 	services := sp.server.services
 	if idx := sp.server.backgroundProofIndex; idx != nil && idx.Snapshot().Synced {
-		services |= wire.SFNodeUtreexo | wire.SFNodeUtreexoArchive
+		services |= bip183.SFNodeUtreexo | bip183.SFNodeUtreexoArchive
 	}
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
@@ -2695,12 +2700,6 @@ func newPeerConfig(sp *serverPeer) *peer.Config {
 			OnRead:            sp.OnRead,
 			OnWrite:           sp.OnWrite,
 			OnNotFound:        sp.OnNotFound,
-
-			// Note: The reference client currently bans peers that send alerts
-			// not signed with its key.  We could verify against their key, but
-			// since the reference client is currently unwilling to support
-			// other implementations' alert messages, we will not relay theirs.
-			OnAlert: nil,
 		},
 		NewestBlock:       sp.newestBlock,
 		HostToNetAddress:  sp.server.addrManager.HostToNetAddress,
@@ -2829,7 +2828,7 @@ func (s *server) peerHandler() {
 	if !cfg.DisableDNSSeed {
 		requiredServices := defaultRequiredServices
 		if !cfg.NoUtreexo {
-			requiredServices |= wire.SFNodeUtreexo
+			requiredServices |= bip183.SFNodeUtreexo
 		}
 		// Add peers discovered through DNS to the address manager.
 		connmgr.SeedFromDNS(activeNetParams.Params, requiredServices,
@@ -3011,13 +3010,13 @@ func (s *server) addAccBytesSent(bytesSent uint64) {
 
 // UpdateProofBytesRead updates the bytes for utreexo proofs that would have
 // been received from all peers for tx messages.
-func (s *server) UpdateProofBytesRead(msgUtreexoTx *wire.MsgUtreexoTx) {
+func (s *server) UpdateProofBytesRead(msgUtreexoTx *bip183.MsgUtreexoTx) {
 	if s.chain.IsUtreexoViewActive() {
 		var utxoDataSize uint64
 		for _, ld := range msgUtreexoTx.LeafDatas {
-			utxoDataSize += uint64(ld.SerializeSizeCompact())
+			utxoDataSize += uint64(bip183.LeafDataSerializeSizeCompact(&ld))
 		}
-		accSize := uint64(wire.BatchProofSerializeAccProofSize(&msgUtreexoTx.AccProof))
+		accSize := uint64(bip183.BatchProofSerializeAccProofSize(&msgUtreexoTx.AccProof))
 
 		s.addProofBytesReceived(utxoDataSize)
 		s.addAccBytesReceived(accSize)
@@ -3026,13 +3025,13 @@ func (s *server) UpdateProofBytesRead(msgUtreexoTx *wire.MsgUtreexoTx) {
 
 // UpdateProofBytesWritten updates the bytes for utreexo proofs that would have
 // been sent to all peers for tx messages.
-func (s *server) UpdateProofBytesWritten(msgUtreexoTx *wire.MsgUtreexoTx) {
+func (s *server) UpdateProofBytesWritten(msgUtreexoTx *bip183.MsgUtreexoTx) {
 	if s.chain.IsUtreexoViewActive() {
 		var utxoDataSize uint64
 		for _, ld := range msgUtreexoTx.LeafDatas {
-			utxoDataSize += uint64(ld.SerializeSizeCompact())
+			utxoDataSize += uint64(bip183.LeafDataSerializeSizeCompact(&ld))
 		}
-		accSize := uint64(wire.BatchProofSerializeAccProofSize(&msgUtreexoTx.AccProof))
+		accSize := uint64(bip183.BatchProofSerializeAccProofSize(&msgUtreexoTx.AccProof))
 
 		s.addProofBytesReceived(utxoDataSize)
 		s.addAccBytesReceived(accSize)
@@ -3433,10 +3432,10 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		services &^= wire.SFNodeP2PV2
 	}
 	if !cfg.BackgroundProofIndex && (!cfg.NoUtreexo || cfg.UtreexoProofIndex || cfg.FlatUtreexoProofIndex) {
-		services |= wire.SFNodeUtreexo
+		services |= bip183.SFNodeUtreexo
 
 		if cfg.Prune == 0 {
-			services |= wire.SFNodeUtreexoArchive
+			services |= bip183.SFNodeUtreexoArchive
 		}
 	}
 
@@ -3569,9 +3568,9 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		utreexo = blockchain.NewUtreexoViewpoint()
 	}
 
-	assumeUtreexoPoint := chainParams.AssumeUtreexoPoint
+	assumeUtreexoPoint := utreexoparams.AssumeUtreexoPoint(chainParams.Net)
 	if cfg.NoAssumeUtreexo {
-		assumeUtreexoPoint = chaincfg.AssumeUtreexo{}
+		assumeUtreexoPoint = utreexoparams.AssumeUtreexo{}
 	}
 
 	// Create a new block chain instance with the appropriate configuration.

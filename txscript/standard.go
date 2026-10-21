@@ -6,15 +6,13 @@ package txscript
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 
+	"github.com/btcsuite/btcd/chaincfg/v2"
+	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/btcutil"
-	"github.com/utreexo/utreexod/chaincfg"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
-	"github.com/utreexo/utreexod/wire"
-	"golang.org/x/crypto/ripemd160"
 )
 
 const (
@@ -51,7 +49,8 @@ const (
 		ScriptVerifyTaproot |
 		ScriptVerifyDiscourageUpgradeableTaprootVersion |
 		ScriptVerifyDiscourageOpSuccess |
-		ScriptVerifyDiscourageUpgradeablePubkeyType
+		ScriptVerifyDiscourageUpgradeablePubkeyType |
+		ScriptVerifyConstScriptCode
 )
 
 // ScriptClass is an enumeration for the list of standard types of script.
@@ -1172,53 +1171,82 @@ func ExtractAtomicSwapDataPushes(version uint16, pkScript []byte) (*AtomicSwapDa
 // p2pkh, p2sh, p2wpkh, p2wsh.
 func GetReconstructScriptType(sigScript, pkScript []byte, witness wire.TxWitness) (ScriptClass, error) {
 	class := GetScriptClass(pkScript)
-	var data, expected []byte
 	switch class {
-	case PubKeyHashTy, ScriptHashTy:
+	case PubKeyHashTy:
 		if len(sigScript) == 0 {
 			return NonStandardTy,
 				fmt.Errorf("Have %v script but sigscript is %v", class.String(), sigScript)
 		}
-		// Match ReconstructScript's last-token behavior, including a final
-		// non-push opcode or a tokenizer error after the last valid token.
-		tokenizer := MakeScriptTokenizer(0, sigScript)
-		for tokenizer.Next() {
-			data = tokenizer.Data()
+		script, err := ReconstructScript(sigScript, witness, PubKeyHashTy)
+		if err != nil {
+			return NonStandardTy, err
 		}
-		if class == PubKeyHashTy {
-			expected = extractPubKeyHash(pkScript)
-		} else {
-			expected = extractScriptHash(pkScript)
+		if !bytes.Equal(script, pkScript) {
+			log.Debugf("expected pkscript of %v but got %v",
+				hex.EncodeToString(pkScript),
+				hex.EncodeToString(script))
+			return NonStandardTy, nil
 		}
-	case WitnessV0PubKeyHashTy, WitnessV0ScriptHashTy:
+
+		return PubKeyHashTy, nil
+
+	case ScriptHashTy:
+		if len(sigScript) == 0 {
+			return NonStandardTy,
+				fmt.Errorf("Have %v script but sigscript is %v", class.String(), sigScript)
+		}
+		script, err := ReconstructScript(sigScript, witness, ScriptHashTy)
+		if err != nil {
+			return NonStandardTy, err
+		}
+		if !bytes.Equal(script, pkScript) {
+			log.Debugf("expected pkscript of %v but got %v",
+				hex.EncodeToString(pkScript),
+				hex.EncodeToString(script))
+			return NonStandardTy, nil
+		}
+
+		return ScriptHashTy, nil
+
+	case WitnessV0PubKeyHashTy:
 		if len(witness) == 0 {
 			return NonStandardTy,
 				fmt.Errorf("Have %v script but witness is %v", class.String(), witness)
 		}
-		data = witness[len(witness)-1]
-		// GetScriptClass has already checked the version, canonical push,
-		// and program length. Only the committed hash remains to compare.
-		expected = pkScript[2:]
+		script, err := ReconstructScript(sigScript, witness, WitnessV0PubKeyHashTy)
+		if err != nil {
+			return NonStandardTy, err
+		}
+		if !bytes.Equal(script, pkScript) {
+			log.Debugf("expected pkscript of %v but got %v",
+				hex.EncodeToString(pkScript),
+				hex.EncodeToString(script))
+			return NonStandardTy, nil
+		}
+
+		return WitnessV0PubKeyHashTy, nil
+
+	case WitnessV0ScriptHashTy:
+		if len(witness) == 0 {
+			return NonStandardTy,
+				fmt.Errorf("Have %v script but witness is %v", class.String(), witness)
+		}
+		script, err := ReconstructScript(sigScript, witness, WitnessV0ScriptHashTy)
+		if err != nil {
+			return NonStandardTy, err
+		}
+		if !bytes.Equal(script, pkScript) {
+			log.Debugf("expected pkscript of %v but got %v",
+				hex.EncodeToString(pkScript),
+				hex.EncodeToString(script))
+			return NonStandardTy, nil
+		}
+
+		return WitnessV0ScriptHashTy, nil
 	default:
-		return NonStandardTy, nil
 	}
 
-	// Compare the hash payload directly instead of allocating a full script
-	// builder. Fixed-size digest storage also avoids per-input Sum allocations.
-	sha := sha256.Sum256(data)
-	var hash160 [ripemd160.Size]byte
-	digest := sha[:]
-	if class != WitnessV0ScriptHashTy {
-		h := ripemd160.New()
-		h.Write(sha[:])
-		digest = h.Sum(hash160[:0])
-	}
-	if !bytes.Equal(digest, expected) {
-		log.Debugf("expected script hash %v but got %v",
-			hex.EncodeToString(expected), hex.EncodeToString(digest))
-		return NonStandardTy, nil
-	}
-	return class, nil
+	return NonStandardTy, nil
 }
 
 // ReconstructScript reconstructs the script from the witness for standard

@@ -1,8 +1,8 @@
 package blockchain
 
 import (
+	"github.com/btcsuite/btcd/wire/v2"
 	"github.com/utreexo/utreexod/blockchain/internal/sizehelper"
-	"github.com/utreexo/utreexod/wire"
 )
 
 // compactIfSparse releases storage retained by fresh-output churn before it

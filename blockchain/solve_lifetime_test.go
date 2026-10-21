@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/utreexo/utreexod/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 )
 
 func TestSolveBlockJoinsWorkers(t *testing.T) {
