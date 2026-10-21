@@ -1,7 +1,7 @@
 module github.com/utreexo/utreexod
 
-// Memory, journal, and proof-performance fixes from the fork's dev branch.
-replace github.com/utreexo/utreexo => github.com/benknab/utreexo v0.0.0-20261012193339-5b775756ea27
+// Memory, journal, proof-performance, and Darwin race fixes from the fork's dev branch.
+replace github.com/utreexo/utreexo => github.com/benknab/utreexo v0.0.0-20261021091605-96ee14f7c6fd
 
 require (
 	github.com/aead/siphash v1.0.1
